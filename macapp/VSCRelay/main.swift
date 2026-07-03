@@ -290,19 +290,34 @@ final class RelayController: ObservableObject {
         return false
     }
 
-    func checkAppUpdate() {
+    var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
+    }
+
+    func checkAppUpdate(manual: Bool = false) {
         guard let url = URL(string: "https://api.github.com/repos/itrootvm/vsc_relay/releases/latest") else { return }
+        if manual { DispatchQueue.main.async { self.note = "Checking for updates..." } }
         var req = URLRequest(url: url)
         req.setValue("VSCRelay", forHTTPHeaderField: "User-Agent")
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
-            guard let self = self, let data = data,
+            guard let self = self else { return }
+            let current = self.appVersion
+            guard let data = data,
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let tag = obj["tag_name"] as? String else { return }
+                  let tag = obj["tag_name"] as? String else {
+                if manual { DispatchQueue.main.async { self.note = "Update check failed. Try again later." } }
+                return
+            }
             let latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
-            let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
-            if self.semverGreater(latest, current) {
-                DispatchQueue.main.async { self.appUpdate = tag }
+            DispatchQueue.main.async {
+                if self.semverGreater(latest, current) {
+                    self.appUpdate = tag
+                    if manual { self.note = "" }
+                } else {
+                    self.appUpdate = ""
+                    if manual { self.note = "You are on the latest version (v\(current))." }
+                }
             }
         }.resume()
     }
@@ -536,6 +551,14 @@ struct SettingsView: View {
             Text("The service reinstalls the shim by itself after Claude Code updates and tells you in Telegram.")
                 .font(.caption).foregroundStyle(.secondary)
 
+            Divider()
+
+            HStack {
+                Text("Version \(ctl.appVersion)").font(.callout).foregroundStyle(.secondary)
+                Spacer()
+                Button("Check for updates") { ctl.checkAppUpdate(manual: true); dismiss() }
+            }
+
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -597,6 +620,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var logMenu: NSMenu!
     private var timer: Timer?
     private var envTimer: Timer?
+    private var updateTimer: Timer?
+    private var lastActiveCheck = Date.distantPast
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let hosting = NSHostingController(rootView: ContentView())
@@ -618,8 +643,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         envTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { _ in
             RelayController.shared.refreshEnv()
         }
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 60 * 60, repeats: true) { _ in
+            RelayController.shared.checkAppUpdate()
+        }
         if RelayController.shared.hasSecrets {
             RelayController.shared.start()
+        }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        let now = Date()
+        if now.timeIntervalSince(lastActiveCheck) > 300 {
+            lastActiveCheck = now
+            RelayController.shared.checkAppUpdate()
         }
     }
 
@@ -648,6 +684,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let show = NSMenuItem(title: "Show Window", action: #selector(showWindow), keyEquivalent: "")
         show.target = self
         menu.addItem(show)
+
+        let upd = NSMenuItem(title: "Check for updates", action: #selector(checkUpdatesAction), keyEquivalent: "")
+        upd.target = self
+        menu.addItem(upd)
 
         let logItem = NSMenuItem(title: "Recent log", action: nil, keyEquivalent: "")
         logMenu = NSMenu()
@@ -688,6 +728,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func startAction() { RelayController.shared.start() }
     @objc private func stopAction() { RelayController.shared.stop() }
+    @objc private func checkUpdatesAction() {
+        RelayController.shared.checkAppUpdate(manual: true)
+        showWindow()
+    }
     @objc private func showWindow() {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
