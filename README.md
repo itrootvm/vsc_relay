@@ -208,6 +208,18 @@ When the Claude Code extension updates, new chats may need the shim installed ag
 This tool can type into your local agents and approve or deny their actions. Use a strong
 pairing key and review your blocked-command list.
 
+## Documentation
+
+- [Installation](docs/installation.md)
+- [Architecture](docs/architecture.md)
+- [Security details](SECURITY.md)
+- [Threat model](docs/threat-model.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [FAQ](docs/faq.md)
+- [Codex support](docs/codex-support.md)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
+
 ## Roadmap
 
 - Universal macOS build for Intel and Apple Silicon.
@@ -239,7 +251,8 @@ Before sending a change:
 ```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test
+cargo test --workspace --all-features
+cargo audit
 ```
 
 Do not commit `.env`, tokens, local logs, `target/`, or `build/`.

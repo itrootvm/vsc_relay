@@ -385,7 +385,7 @@ final class RelayController: ObservableObject {
     }
 
     var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.3"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.4"
     }
 
     func checkAppUpdate(manual: Bool = false) {

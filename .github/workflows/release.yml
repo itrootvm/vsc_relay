@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   build-and-release:
@@ -20,11 +22,15 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
       - name: Check
         run: |
           cargo fmt --all -- --check
           cargo clippy --all-targets --all-features -- -D warnings
-          cargo test
+          cargo test --workspace --all-features
+          cargo audit
 
       - name: Build app and dmg
         run: |
@@ -36,9 +42,41 @@ jobs:
           echo "building version $APP_VERSION"
           ./build_app.sh
 
+      - name: Verify dmg
+        run: |
+          MOUNT_DIR="$(mktemp -d)"
+          cleanup() {
+            hdiutil detach "$MOUNT_DIR" -quiet || true
+            rmdir "$MOUNT_DIR" || true
+          }
+          trap cleanup EXIT
+          hdiutil attach build/VSCRelay.dmg -mountpoint "$MOUNT_DIR" -nobrowse -quiet
+          test -d "$MOUNT_DIR/VSCRelay.app"
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: build/VSCRelay.spdx.json
+          upload-artifact: false
+
+      - name: Generate checksums
+        run: |
+          cd build
+          shasum -a 256 VSCRelay.dmg VSCRelay.spdx.json > SHA256SUMS
+
+      - name: Attest dmg provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: build/VSCRelay.dmg
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           name: VS Code Agent Relay ${{ github.ref_name }}
-          files: build/VSCRelay.dmg
+          files: |
+            build/VSCRelay.dmg
+            build/SHA256SUMS
+            build/VSCRelay.spdx.json
           generate_release_notes: true

@@ -1,0 +1,59 @@
+# VSC Relay Full Context
+
+VSC Relay controls Claude Code in VS Code from Telegram. It is intended for developers who
+leave long-running coding-agent tasks active and need to answer questions, approve or deny
+actions, stop work, continue work, or send a follow-up prompt from a phone.
+
+The relay runs locally on macOS. It reads local session files written by VS Code, Claude
+Code, and Codex. It talks to Telegram Bot API by outbound HTTPS long polling. It does not
+open an inbound network port and does not rely on a hosted relay backend.
+
+Core components:
+
+- `relay-agent`: daemon, Telegram bot, hook handling, session watching, and control actions.
+- `relay-discovery`: VS Code, Claude Code, Codex, and git discovery.
+- `relay-adapters`: transcript and session readers.
+- `relay-control`: macOS window focus and GUI fallback.
+- `relay-core`: shared state and ids.
+- `relay-shim`: optional Claude Code helper wrapper for background control.
+- `VSCRelay.app`: SwiftUI setup app for token storage, pairing key setup, logs, service
+  control, and shim management.
+
+Telegram commands:
+
+- `/auth <key>` pairs the current chat.
+- `/menu` opens the interactive windows and chats menu.
+- `/windows` lists discovered VS Code windows and chats.
+- `/status <workspace>` shows details for one workspace.
+- `/say <workspace> <claude|codex> <text>` sends a prompt.
+- `/stop <workspace> <claude|codex>` interrupts the current turn.
+- `/cont <workspace> <claude|codex>` sends `continue`.
+- `/mode <workspace>` cycles Claude Code permission mode.
+- `/slash <workspace> <claude|codex> <command>` sends a slash command.
+- `/focus <workspace>` raises the matching VS Code window.
+- `/danger` shows blocked command patterns.
+- `/danger add <pattern>` adds a blocked command pattern.
+- `/danger del <pattern>` removes a blocked command pattern.
+- `/help` shows command help.
+
+Support matrix:
+
+- Claude Code in VS Code: read status, send prompts, answer questions with shim, permission
+  actions, model and permission-mode controls.
+- Codex in VS Code: experimental read support and window focus only. No background prompt
+  injection, question answers, permission actions, or model controls in 0.1.4.
+
+Security model:
+
+- Pairing is required through `/auth <key>` or `TELEGRAM_ALLOWED_CHATS`.
+- App secrets are stored in macOS Keychain.
+- Terminal secrets are read from `.env`.
+- Runtime state is under `~/.vsc-relay`.
+- Local control uses Unix sockets under the current user account.
+- The dangerous-command guard blocks configured patterns surfaced through Claude Code hooks.
+- Current limitations include no full policy engine, no fail-closed guard mode, no
+  append-only audit journal, no transcript redaction layer, and no complete Codex background
+  control.
+
+Current version: 0.1.4. Current packaged builds target Apple Silicon Macs. Universal Intel
+support is planned.

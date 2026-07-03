@@ -990,7 +990,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "relay-adapters"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "relay-core",
@@ -1003,7 +1003,7 @@ dependencies = [
 
 [[package]]
 name = "relay-agent"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1025,7 +1025,7 @@ dependencies = [
 
 [[package]]
 name = "relay-control"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "relay-core",
@@ -1034,7 +1034,7 @@ dependencies = [
 
 [[package]]
 name = "relay-core"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "blake3",
  "chrono",
@@ -1045,7 +1045,7 @@ dependencies = [
 
 [[package]]
 name = "relay-discovery"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1060,7 +1060,7 @@ dependencies = [
 
 [[package]]
 name = "relay-shim"
-version = "0.1.0"
+version = "0.1.4"
 
 [[package]]
 name = "reqwest"
