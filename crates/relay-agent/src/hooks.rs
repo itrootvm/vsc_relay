@@ -200,14 +200,20 @@ mod redact_tests {
 
     #[test]
     fn bare_url_keeps_only_scheme_host() {
-        let out = redact_raw("WebFetch", Some("https://admin:S3cr3t@internal.example.com/api?token=abc"));
+        let out = redact_raw(
+            "WebFetch",
+            Some("https://admin:S3cr3t@internal.example.com/api?token=abc"),
+        );
         assert_eq!(out, "WebFetch https://internal.example.com");
     }
 
     #[test]
     fn file_path_is_basename_only() {
         let out = redact_raw("Edit", Some("/Users/itodev/.ssh/id_rsa"));
-        assert!(!out.contains("/Users") && !out.contains(".ssh"), "got {out:?}");
+        assert!(
+            !out.contains("/Users") && !out.contains(".ssh"),
+            "got {out:?}"
+        );
     }
 
     #[test]
