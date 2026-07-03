@@ -14,6 +14,12 @@ rm -rf "$BUILD/$APP"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 cp macapp/Info.plist "$CONTENTS/Info.plist"
 
+VERSION="${APP_VERSION:-$(cat VERSION 2>/dev/null || echo 0.0.0)}"
+BUILDNO="$(date +%Y%m%d%H%M)"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$CONTENTS/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILDNO" "$CONTENTS/Info.plist"
+echo "     version $VERSION (build $BUILDNO)"
+
 for b in vsc-relay-agent vsc-claude-shim; do
   cp "target/release/$b" "$CONTENTS/Resources/$b"
   strip "$CONTENTS/Resources/$b" 2>/dev/null || true
