@@ -149,7 +149,9 @@ pub async fn void_referenced(perms: &Permissions, pid: u32, line: &Value) -> Vec
     let mut map = perms.lock().await;
     let ids: Vec<String> = map
         .iter()
-        .filter(|(_, p)| p.pid == pid && !p.tool_use_id.is_empty() && line_refs(line, &p.tool_use_id))
+        .filter(|(_, p)| {
+            p.pid == pid && !p.tool_use_id.is_empty() && line_refs(line, &p.tool_use_id)
+        })
         .map(|(k, _)| k.clone())
         .collect();
     ids.into_iter()

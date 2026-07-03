@@ -104,7 +104,12 @@ async fn reader(
     for cards in permission::drain_pid(&perms, pid).await {
         for (c, m) in cards {
             let _ = tg
-                .edit_message_text(c, m, "session closed - permission is no longer active", None)
+                .edit_message_text(
+                    c,
+                    m,
+                    "session closed - permission is no longer active",
+                    None,
+                )
                 .await;
         }
     }
