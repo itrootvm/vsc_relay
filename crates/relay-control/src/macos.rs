@@ -212,16 +212,43 @@ fn set_clipboard(text: &str) -> Result<()> {
 }
 
 fn run_osa_out(script: &str) -> Result<String> {
-    let output = Command::new("osascript")
+    use std::io::Read;
+    use std::time::Instant;
+    let mut child = Command::new("osascript")
         .arg("-e")
         .arg(script)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .context("spawn osascript")?;
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
+    let deadline = Duration::from_secs(12);
+    let start = Instant::now();
+    let status = loop {
+        if let Some(s) = child.try_wait().context("wait osascript")? {
+            break s;
+        }
+        if start.elapsed() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!(
+                "osascript timed out after {}s (GUI did not respond)",
+                deadline.as_secs()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let mut out = String::new();
+    let mut err = String::new();
+    if let Some(mut o) = child.stdout.take() {
+        let _ = o.read_to_string(&mut out);
+    }
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_string(&mut err);
+    }
+    if !status.success() {
         bail!("osascript failed: {}", err.trim());
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(out.trim().to_string())
 }
 
 fn focus_action_script(alias: &str, keys_block: &str, restore: bool) -> String {

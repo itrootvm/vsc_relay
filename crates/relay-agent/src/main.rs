@@ -791,15 +791,26 @@ async fn poll_commands(
             Ok(updates) => {
                 for u in updates {
                     offset = u.update_id + 1;
-                    if let Some(m) = u.message {
-                        handle_message(&tg, &registry, &active, &ctl, &auth, m).await;
-                    }
-                    if let Some(cq) = u.callback_query {
-                        handle_callback(
-                            &tg, &registry, &active, &ctl, &auth, &pending, &questions, &perms, cq,
-                        )
-                        .await;
-                    }
+                    let tg = tg.clone();
+                    let registry = registry.clone();
+                    let active = active.clone();
+                    let ctl = ctl.clone();
+                    let auth = auth.clone();
+                    let pending = pending.clone();
+                    let questions = questions.clone();
+                    let perms = perms.clone();
+                    tokio::spawn(async move {
+                        if let Some(m) = u.message {
+                            handle_message(&tg, &registry, &active, &ctl, &auth, m).await;
+                        }
+                        if let Some(cq) = u.callback_query {
+                            handle_callback(
+                                &tg, &registry, &active, &ctl, &auth, &pending, &questions, &perms,
+                                cq,
+                            )
+                            .await;
+                        }
+                    });
                 }
             }
             Err(e) => {
@@ -961,21 +972,13 @@ async fn say_text(
         }
     }
 
-    let ctl = ctl.clone();
-    let alias = alias.to_string();
-    let text = text.to_string();
-    let res = tokio::task::spawn_blocking(move || match (agent, sidebar, session) {
-        (AgentKind::ClaudeCode, true, _) => ctl.send_claude_sidebar(&alias, &text),
-        (AgentKind::ClaudeCode, false, Some(sid)) => ctl.send_claude_session(&alias, &sid, &text),
-        _ => ctl.send_prompt(&alias, agent, &text),
-    })
-    .await;
-    let where_ = if sidebar { " (sidebar)" } else { "" };
-    match res {
-        Ok(Ok(())) => format!("✉️ sent to {agent}{where_}"),
-        Ok(Err(e)) => format!("❌ {e}"),
-        Err(e) => format!("❌ task: {e}"),
+    let _ = (ctl, sidebar, session, text);
+    if agent == AgentKind::Codex {
+        return "❌ Background send to Codex is not available yet.".to_string();
     }
+    "❌ No background channel for this chat. Background send needs the shim, and only chats \
+     opened after the shim was installed have it. Open a new Claude chat."
+        .to_string()
 }
 
 fn danger_command(sub: &str, arg: &str) -> String {
@@ -1148,17 +1151,10 @@ async fn say_text_sid(ctl: &Arc<dyn Control>, alias: &str, sid: &str, text: &str
             Err(e) => format!("❌ task: {e}"),
         };
     }
-    let ctl = ctl.clone();
-    let alias = alias.to_string();
-    let sid = sid.to_string();
-    let text = text.to_string();
-    let res =
-        tokio::task::spawn_blocking(move || ctl.send_claude_session(&alias, &sid, &text)).await;
-    match res {
-        Ok(Ok(())) => "✉️ sent (GUI tab - no shim)".to_string(),
-        Ok(Err(e)) => format!("❌ {e}"),
-        Err(e) => format!("❌ task: {e}"),
-    }
+    let _ = (ctl, alias, sid, text);
+    "❌ No background channel for this chat. It was opened before the shim was installed. \
+     Open a new Claude chat and Send will go through in the background."
+        .to_string()
 }
 
 async fn pending_option_label(

@@ -1,0 +1,43 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test
+
+      - name: Stamp version from the tag
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $V" macapp/Info.plist
+          echo "building version $V"
+
+      - name: Build app and dmg
+        run: ./build_app.sh
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: VS Code Agent Relay ${{ github.ref_name }}
+          files: build/VSCRelay.dmg
+          generate_release_notes: true
