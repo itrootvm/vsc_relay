@@ -26,17 +26,105 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
+
+      - name: Build Pages
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-warn-script-location --user Markdown==3.9
+          python3 - <<'PY'
+          from pathlib import Path
+          import html
+          import re
+          import shutil
+          import markdown
+
+          src = Path("docs")
+          dst = Path("_site")
+          if dst.exists():
+              shutil.rmtree(dst)
+          dst.mkdir()
+
+          def title_for(text):
+              for line in text.splitlines():
+                  if line.startswith("# "):
+                      return line[2:].strip()
+              return "VSC Relay"
+
+          def rewrite_links(text):
+              def repl(match):
+                  label = match.group(1)
+                  target = match.group(2)
+                  if re.match(r"^[a-z]+:", target) or target.startswith("#"):
+                      return match.group(0)
+                  if "#" in target:
+                      path, anchor = target.split("#", 1)
+                      suffix = "#" + anchor
+                  else:
+                      path, suffix = target, ""
+                  if path.endswith(".md"):
+                      path = path[:-3] + ".html"
+                  return f"[{label}]({path}{suffix})"
+              return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", repl, text)
+
+          def page(title, body):
+              safe_title = html.escape(title)
+              return f"""<!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>{safe_title}</title>
+            <style>
+              body {{ max-width: 920px; margin: 0 auto; padding: 32px 20px 56px; font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #1f2937; background: #ffffff; }}
+              a {{ color: #0f5fb8; }}
+              h1, h2, h3 {{ color: #111827; line-height: 1.2; }}
+              h1 {{ font-size: 2rem; margin-bottom: 0.8rem; }}
+              h2 {{ margin-top: 2rem; border-top: 1px solid #e5e7eb; padding-top: 1.2rem; }}
+              code {{ background: #f3f4f6; padding: 0.12rem 0.28rem; border-radius: 4px; }}
+              pre {{ overflow-x: auto; background: #111827; color: #f9fafb; padding: 1rem; border-radius: 6px; }}
+              pre code {{ background: transparent; padding: 0; }}
+              table {{ border-collapse: collapse; width: 100%; margin: 1rem 0; }}
+              th, td {{ border: 1px solid #d1d5db; padding: 0.55rem; text-align: left; vertical-align: top; }}
+              th {{ background: #f9fafb; }}
+              img {{ max-width: 100%; height: auto; }}
+            </style>
+          </head>
+          <body>
+          {body}
+          </body>
+          </html>
+          """
+
+          for item in src.rglob("*"):
+              if item.is_dir() or item.name.startswith("_"):
+                  continue
+              rel = item.relative_to(src)
+              target = dst / rel
+              target.parent.mkdir(parents=True, exist_ok=True)
+              if item.suffix == ".md":
+                  text = rewrite_links(item.read_text())
+                  body = markdown.markdown(text, extensions=["extra", "sane_lists", "toc"])
+                  target = target.with_suffix(".html")
+                  target.write_text(page(title_for(text), body))
+              else:
+                  shutil.copy2(item, target)
+
+          (dst / ".nojekyll").write_text("")
+          if not (dst / "index.html").exists():
+              raise SystemExit("missing _site/index.html")
+          PY
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
-          path: docs
+          path: _site
+          include-hidden-files: true
 
       - name: Deploy Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

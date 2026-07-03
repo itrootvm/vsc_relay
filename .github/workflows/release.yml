@@ -14,7 +14,7 @@ jobs:
   build-and-release:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal
@@ -67,12 +67,12 @@ jobs:
           shasum -a 256 VSCRelay.dmg VSCRelay.spdx.json > SHA256SUMS
 
       - name: Attest dmg provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: build/VSCRelay.dmg
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: VS Code Agent Relay ${{ github.ref_name }}
           files: |
