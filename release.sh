@@ -32,33 +32,46 @@ case "$arg" in
 esac
 
 echo "$new" >VERSION
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $new" macapp/Info.plist
 python3 - "$new" <<'PY'
 from pathlib import Path
 import sys
 
-path = Path("Cargo.toml")
 version = sys.argv[1]
-text = path.read_text()
+
+cargo = Path("Cargo.toml")
+text = cargo.read_text()
 prefix = "[workspace.package]\nversion = \""
 start = text.index(prefix) + len(prefix)
 end = text.index('"', start)
-path.write_text(text[:start] + version + text[end:])
+cargo.write_text(text[:start] + version + text[end:])
+
+plist = Path("macapp/Info.plist")
+if plist.exists():
+    import plistlib
+    data = plistlib.loads(plist.read_bytes())
+    data["CFBundleShortVersionString"] = version
+    plist.write_bytes(plistlib.dumps(data))
 PY
 echo "version: $cur -> $new"
 
-./build_app.sh
+os="$(uname -s)"
+case "$os" in
+  Darwin) ./build_app.sh; artifact="build/VSCRelay.app + build/VSCRelay.dmg" ;;
+  Linux)  ./build_linux.sh; artifact="dist/vsc-relay-$new-linux-*.tar.gz" ;;
+  *) echo "note: no packaging step for $os; binaries via 'cargo build --release'"; artifact="(none)" ;;
+esac
 
 cat <<EOF
 
-built build/VSCRelay.app at v$new. to ship it as a GitHub release, run:
+built $artifact at v$new. to ship it as a GitHub release, run:
 
   git add VERSION Cargo.toml Cargo.lock macapp/Info.plist
   git commit -m "release v$new"
   git tag "v$new"
   git push && git push origin "v$new"
 
-the tag fires .github/workflows/release.yml, which stamps the same v$new
-(from the tag) and uploads the dmg. every running app then sees v$new as
-the latest release and self-updates. one number, set once, here.
+the tag fires .github/workflows/release.yml, which builds on both macOS and
+Linux runners, stamps the same v$new (from the tag), and uploads the dmg and
+the linux tarball. every running macOS app then sees v$new and self-updates.
+one number, set once, here.
 EOF

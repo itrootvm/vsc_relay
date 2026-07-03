@@ -40,7 +40,7 @@ start() {
     exit 1
   fi
   echo "building release…"
-  cargo build --release >/dev/null
+  cargo build --release -p relay-agent >/dev/null
   nohup "$BIN" >>"$LOGFILE" 2>&1 &
   echo $! >"$PIDFILE"
   sleep 1

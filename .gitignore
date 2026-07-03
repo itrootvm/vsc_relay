@@ -16,3 +16,4 @@ xx.txt
 *.dmg
 
 /internal
+/dist
