@@ -746,7 +746,7 @@ fn format_event(machine: &str, alias: &str, e: &RelayEvent) -> (String, Option<s
                 let id = actions::put(full);
                 rows.push(vec![("📄 Show full text".to_string(), format!("ft:{id}"))]);
             }
-            let mut row = vec![("⏹ Stop".to_string(), format!("act:stop:{alias}:{agent}"))];
+            let mut row = Vec::new();
             if e.agent == AgentKind::ClaudeCode {
                 row.push((
                     "✍️ Send".to_string(),
@@ -1048,15 +1048,78 @@ fn parse_alias_idx(s: &str) -> Option<(String, usize)> {
     Some((s[..pos].to_string(), idx))
 }
 
-fn setting_picker(kind: &str, alias: &str, idx: usize) -> (String, serde_json::Value) {
+fn active_model(cwd: &std::path::Path, sid: &str) -> Option<(String, String)> {
+    let home = dirs::home_dir()?;
+    let path = home
+        .join(".claude")
+        .join("projects")
+        .join(relay_discovery::encode_cwd(cwd))
+        .join(format!("{sid}.jsonl"));
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut found: Option<String> = None;
+    for line in text.lines() {
+        if let Some(pos) = line.find("\"model\":\"") {
+            let rest = &line[pos + 9..];
+            if let Some(end) = rest.find('"') {
+                let m = &rest[..end];
+                if m.starts_with("claude-") {
+                    found = Some(m.to_string());
+                }
+            }
+        }
+    }
+    found.map(|id| (model_tier(&id), model_friendly(&id)))
+}
+
+fn model_tier(id: &str) -> String {
+    let s = id.strip_prefix("claude-").unwrap_or(id);
+    for t in ["opus", "sonnet", "haiku", "fable"] {
+        if s.starts_with(t) {
+            return t.to_string();
+        }
+    }
+    "opus".to_string()
+}
+
+fn model_friendly(id: &str) -> String {
+    let s = id.strip_prefix("claude-").unwrap_or(id);
+    let parts: Vec<&str> = s.split('-').collect();
+    let family = parts.first().copied().unwrap_or("");
+    let mut chars = family.chars();
+    let cap = match chars.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    };
+    let ver = parts
+        .iter()
+        .skip(1)
+        .take(2)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(".");
+    if ver.is_empty() {
+        cap
+    } else {
+        format!("{cap} {ver}")
+    }
+}
+
+fn setting_picker(
+    kind: &str,
+    alias: &str,
+    idx: usize,
+    active: Option<(String, String)>,
+) -> (String, serde_json::Value) {
     let (title, act, opts): (&str, &str, Vec<(&str, &str)>) = match kind {
         "model" => (
             "🧠 Model",
             "setmodel",
             vec![
-                ("Sonnet", "sonnet"),
+                ("Default", "default"),
                 ("Opus", "opus"),
                 ("Opus 1M", "opus[1m]"),
+                ("Fable", "fable"),
+                ("Sonnet", "sonnet"),
                 ("Haiku", "haiku"),
             ],
         ),
@@ -1081,12 +1144,20 @@ fn setting_picker(kind: &str, alias: &str, idx: usize) -> (String, serde_json::V
             ],
         ),
     };
+    let active_tier = active.as_ref().map(|(t, _)| t.clone());
     let mut rows: Vec<Vec<(String, String)>> = Vec::new();
     for chunk in opts.chunks(2) {
         rows.push(
             chunk
                 .iter()
-                .map(|(l, v)| (l.to_string(), format!("act:{act}:{alias}:{idx}:{v}")))
+                .map(|(l, v)| {
+                    let mark = if active_tier.as_deref() == Some(v) {
+                        "✓ "
+                    } else {
+                        ""
+                    };
+                    (format!("{mark}{l}"), format!("act:{act}:{alias}:{idx}:{v}"))
+                })
                 .collect(),
         );
     }
@@ -1094,13 +1165,17 @@ fn setting_picker(kind: &str, alias: &str, idx: usize) -> (String, serde_json::V
         "⬅️ Back".to_string(),
         format!("m:c:{alias}:claude:{idx}"),
     )]);
-    (
-        format!(
-            "{title} - pick for chat #{idx} in <b>{}</b>",
-            esc_html(alias)
-        ),
-        keyboard(rows),
-    )
+    let mut header = format!(
+        "{title} - pick for chat #{idx} in <b>{}</b>",
+        esc_html(alias)
+    );
+    if let Some((_, friendly)) = &active {
+        header.push_str(&format!(
+            "\nActive in VS Code: <b>{}</b>",
+            esc_html(friendly)
+        ));
+    }
+    (header, keyboard(rows))
 }
 
 async fn apply_setting(
@@ -1459,7 +1534,24 @@ async fn handle_callback(
             .find(|k| rest.starts_with(&format!("{k}:")))
         {
             match parse_alias_idx(&rest[k.len() + 1..]) {
-                Some((alias, idx)) => setting_picker(k, &alias, idx),
+                Some((alias, idx)) => {
+                    let active = if k == "model" {
+                        let target = {
+                            let ws = registry.read().await;
+                            ws.iter()
+                                .find(|w| workspace_alias(&w.workspace) == alias)
+                                .and_then(|w| {
+                                    w.claude
+                                        .get(idx)
+                                        .map(|c| (w.workspace.clone(), c.session_id.clone()))
+                                })
+                        };
+                        target.and_then(|(cwd, sid)| active_model(&cwd, &sid))
+                    } else {
+                        None
+                    };
+                    setting_picker(k, &alias, idx, active)
+                }
                 None => (
                     "bad ref".to_string(),
                     keyboard(vec![vec![("⬅️ Back".to_string(), "m:home".to_string())]]),
@@ -1904,4 +1996,19 @@ fn help_text() -> String {
      /slash &lt;ws&gt; &lt;agent&gt; &lt;cmd&gt; - send a slash command\n\
      /focus &lt;ws&gt; - raise the window"
         .to_string()
+}
+
+#[cfg(test)]
+mod model_tests {
+    use super::{model_friendly, model_tier};
+
+    #[test]
+    fn maps_model_ids() {
+        assert_eq!(model_tier("claude-opus-4-8"), "opus");
+        assert_eq!(model_friendly("claude-opus-4-8"), "Opus 4.8");
+        assert_eq!(model_friendly("claude-sonnet-5"), "Sonnet 5");
+        assert_eq!(model_friendly("claude-haiku-4-5-20251001"), "Haiku 4.5");
+        assert_eq!(model_tier("claude-fable-5"), "fable");
+        assert_eq!(model_friendly("claude-fable-5"), "Fable 5");
+    }
 }
