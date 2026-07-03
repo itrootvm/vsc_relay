@@ -1,0 +1,41 @@
+use anyhow::Result;
+use relay_core::AgentKind;
+
+#[derive(Debug, Clone)]
+pub struct FocusProbe {
+    pub verified: bool,
+    pub target_proc: Option<String>,
+    pub match_count: u32,
+    pub matched_window: String,
+    pub frontmost_app: String,
+    pub focused_before: String,
+    pub focused_after: String,
+    pub reason: String,
+}
+
+pub trait Control: Send + Sync {
+    fn focus_window(&self, alias: &str) -> Result<()>;
+    fn probe_focus(&self, alias: &str) -> Result<FocusProbe>;
+    fn send_prompt(&self, alias: &str, agent: AgentKind, text: &str) -> Result<()>;
+    fn send_claude_session(&self, alias: &str, session_id: &str, text: &str) -> Result<()>;
+    fn send_claude_sidebar(&self, alias: &str, text: &str) -> Result<()>;
+    fn stop(&self, alias: &str, agent: AgentKind) -> Result<()>;
+    fn accept(&self, alias: &str) -> Result<()>;
+    fn pick_option(&self, alias: &str, option_index: usize) -> Result<()>;
+    fn cont(&self, alias: &str, agent: AgentKind) -> Result<()>;
+    fn cycle_mode(&self, alias: &str, agent: AgentKind) -> Result<()>;
+    fn slash(&self, alias: &str, agent: AgentKind, cmd: &str) -> Result<()>;
+}
+
+#[cfg(target_os = "macos")]
+pub mod macos;
+
+#[cfg(target_os = "macos")]
+pub fn platform() -> Box<dyn Control> {
+    Box::new(macos::MacControl::new())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn platform() -> Box<dyn Control> {
+    compile_error!("only macOS control is implemented so far");
+}
