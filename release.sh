@@ -33,6 +33,18 @@ esac
 
 echo "$new" >VERSION
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $new" macapp/Info.plist
+python3 - "$new" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path("Cargo.toml")
+version = sys.argv[1]
+text = path.read_text()
+prefix = "[workspace.package]\nversion = \""
+start = text.index(prefix) + len(prefix)
+end = text.index('"', start)
+path.write_text(text[:start] + version + text[end:])
+PY
 echo "version: $cur -> $new"
 
 ./build_app.sh
@@ -41,7 +53,7 @@ cat <<EOF
 
 built build/VSCRelay.app at v$new. to ship it as a GitHub release, run:
 
-  git add VERSION macapp/Info.plist
+  git add VERSION Cargo.toml Cargo.lock macapp/Info.plist
   git commit -m "release v$new"
   git tag "v$new"
   git push && git push origin "v$new"
