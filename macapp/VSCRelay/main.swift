@@ -48,6 +48,8 @@ final class RelayController: ObservableObject {
     @Published var showSettings: Bool = false
     @Published var showHelp: Bool = false
     @Published var appUpdate: String = ""
+    @Published var updateAsset: String = ""
+    @Published var updating: Bool = false
     let releasesURL = "https://github.com/itrootvm/vsc_relay/releases/latest"
     @Published var turnsToday: Int = 0
     @Published var sessionsToday: Int = 0
@@ -277,6 +279,98 @@ final class RelayController: ObservableObject {
         if let url = URL(string: releasesURL) { NSWorkspace.shared.open(url) }
     }
 
+    private func runShell(_ tool: String, _ args: [String]) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: tool)
+        p.arguments = args
+        try? p.run()
+        p.waitUntilExit()
+    }
+
+    private func finishUpdate(_ fail: String) {
+        DispatchQueue.main.async {
+            self.updating = false
+            self.note = "Update failed: \(fail). You can still download it from the release page."
+        }
+    }
+
+    func performSelfUpdate() {
+        guard !updating else { return }
+        guard !updateAsset.isEmpty, let url = URL(string: updateAsset) else {
+            openReleases()
+            return
+        }
+        updating = true
+        note = "Downloading update..."
+        var req = URLRequest(url: url)
+        req.setValue("VSCRelay", forHTTPHeaderField: "User-Agent")
+        URLSession.shared.downloadTask(with: req) { [weak self] tmp, _, err in
+            guard let self = self else { return }
+            guard let tmp = tmp, err == nil else {
+                self.finishUpdate("download failed")
+                return
+            }
+            self.installFrom(dmg: tmp)
+        }.resume()
+    }
+
+    private func installFrom(dmg: URL) {
+        let fm = FileManager.default
+        let work = fm.temporaryDirectory.appendingPathComponent("vscrelay-update")
+        try? fm.removeItem(at: work)
+        try? fm.createDirectory(at: work, withIntermediateDirectories: true)
+        let dmgPath = work.appendingPathComponent("VSCRelay.dmg")
+        do { try fm.moveItem(at: dmg, to: dmgPath) } catch { finishUpdate("temp move"); return }
+
+        let mount = work.appendingPathComponent("mnt")
+        runShell("/usr/bin/hdiutil", ["attach", dmgPath.path, "-nobrowse", "-mountpoint", mount.path])
+        let apps = (try? fm.contentsOfDirectory(at: mount, includingPropertiesForKeys: nil))?
+            .filter { $0.pathExtension == "app" } ?? []
+        guard let src = apps.first else {
+            runShell("/usr/bin/hdiutil", ["detach", mount.path, "-force"])
+            finishUpdate("no app in dmg")
+            return
+        }
+        let newApp = work.appendingPathComponent("VSCRelay.app")
+        try? fm.removeItem(at: newApp)
+        do { try fm.copyItem(at: src, to: newApp) } catch {
+            runShell("/usr/bin/hdiutil", ["detach", mount.path, "-force"])
+            finishUpdate("copy failed")
+            return
+        }
+        runShell("/usr/bin/hdiutil", ["detach", mount.path, "-force"])
+        runShell("/usr/bin/xattr", ["-dr", "com.apple.quarantine", newApp.path])
+
+        let dest = Bundle.main.bundlePath
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let scriptPath = work.appendingPathComponent("swap.sh")
+        let script = """
+        #!/bin/bash
+        while kill -0 \(pid) 2>/dev/null; do sleep 0.4; done
+        /bin/rm -rf "\(dest)"
+        /bin/cp -R "\(newApp.path)" "\(dest)"
+        /usr/bin/xattr -dr com.apple.quarantine "\(dest)" 2>/dev/null
+        /usr/bin/open "\(dest)"
+        """
+        do { try script.write(to: scriptPath, atomically: true, encoding: .utf8) } catch {
+            finishUpdate("script write")
+            return
+        }
+        runShell("/bin/chmod", ["+x", scriptPath.path])
+
+        let launcher = Process()
+        launcher.executableURL = URL(fileURLWithPath: "/bin/sh")
+        launcher.arguments = ["-c", "nohup /bin/bash '\(scriptPath.path)' >/dev/null 2>&1 &"]
+        try? launcher.run()
+        launcher.waitUntilExit()
+
+        DispatchQueue.main.async {
+            self.note = "Installing update and restarting..."
+            self.stop()
+            NSApp.terminate(nil)
+        }
+    }
+
     private func semverGreater(_ a: String, _ b: String) -> Bool {
         func parse(_ s: String) -> [Int] {
             s.split(separator: ".").map { Int($0.prefix(while: { $0.isNumber })) ?? 0 }
@@ -310,12 +404,20 @@ final class RelayController: ObservableObject {
                 return
             }
             let latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+            var dmgURL = ""
+            if let assets = obj["assets"] as? [[String: Any]],
+               let dmg = assets.first(where: { ($0["name"] as? String)?.hasSuffix(".dmg") == true }),
+               let dl = dmg["browser_download_url"] as? String {
+                dmgURL = dl
+            }
             DispatchQueue.main.async {
                 if self.semverGreater(latest, current) {
                     self.appUpdate = tag
+                    self.updateAsset = dmgURL
                     if manual { self.note = "" }
                 } else {
                     self.appUpdate = ""
+                    self.updateAsset = ""
                     if manual { self.note = "You are on the latest version (v\(current))." }
                 }
             }
@@ -429,9 +531,17 @@ struct ContentView: View {
         if !ctl.appUpdate.isEmpty {
             HStack(spacing: 8) {
                 Image(systemName: "arrow.down.circle.fill").foregroundStyle(.blue)
-                Text("App update \(ctl.appUpdate) is available.").font(.callout)
+                Text(ctl.updating
+                    ? "Updating to \(ctl.appUpdate) and restarting..."
+                    : "App update \(ctl.appUpdate) is available.")
+                    .font(.callout)
                 Spacer()
-                Button("Download") { ctl.openReleases() }
+                if ctl.updating {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Update now") { ctl.performSelfUpdate() }.buttonStyle(.borderedProminent)
+                    Button("Page") { ctl.openReleases() }
+                }
             }
             .padding(10)
             .background(Color.blue.opacity(0.12))
