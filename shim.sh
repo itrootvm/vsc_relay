@@ -3,8 +3,14 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 find_dir() {
-  ls -d "$HOME"/.vscode/extensions/anthropic.claude-code-*/resources/native-binary 2>/dev/null \
-    | sort -V | tail -1
+  ls -d \
+    "$HOME"/.vscode/extensions/anthropic.claude-code-*/resources/native-binary \
+    "$HOME"/.vscode-insiders/extensions/anthropic.claude-code-*/resources/native-binary \
+    "$HOME"/.vscode-oss/extensions/anthropic.claude-code-*/resources/native-binary \
+    "$HOME"/.vscodium/extensions/anthropic.claude-code-*/resources/native-binary \
+    "$HOME"/.cursor/extensions/anthropic.claude-code-*/resources/native-binary \
+    "$HOME"/.windsurf/extensions/anthropic.claude-code-*/resources/native-binary \
+    2>/dev/null | sort -V | tail -1
 }
 
 DIR="$(find_dir || true)"

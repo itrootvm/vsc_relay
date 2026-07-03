@@ -30,12 +30,71 @@ pub trait Control: Send + Sync {
 #[cfg(target_os = "macos")]
 pub mod macos;
 
+#[cfg(target_os = "linux")]
+pub mod linux;
+
 #[cfg(target_os = "macos")]
 pub fn platform() -> Box<dyn Control> {
     Box::new(macos::MacControl::new())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub fn platform() -> Box<dyn Control> {
-    compile_error!("only macOS control is implemented so far");
+    Box::new(linux::LinuxControl::new())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub fn platform() -> Box<dyn Control> {
+    Box::new(unsupported::Unsupported)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+mod unsupported {
+    use super::{Control, FocusProbe};
+    use anyhow::Result;
+    use relay_core::AgentKind;
+
+    pub struct Unsupported;
+
+    fn err() -> anyhow::Error {
+        anyhow::anyhow!(
+            "GUI control is not implemented on this platform; the background shim path still works for Claude Code"
+        )
+    }
+
+    impl Control for Unsupported {
+        fn focus_window(&self, _alias: &str) -> Result<()> {
+            Err(err())
+        }
+        fn probe_focus(&self, _alias: &str) -> Result<FocusProbe> {
+            Err(err())
+        }
+        fn send_prompt(&self, _alias: &str, _agent: AgentKind, _text: &str) -> Result<()> {
+            Err(err())
+        }
+        fn send_claude_session(&self, _alias: &str, _session_id: &str, _text: &str) -> Result<()> {
+            Err(err())
+        }
+        fn send_claude_sidebar(&self, _alias: &str, _text: &str) -> Result<()> {
+            Err(err())
+        }
+        fn stop(&self, _alias: &str, _agent: AgentKind) -> Result<()> {
+            Err(err())
+        }
+        fn accept(&self, _alias: &str) -> Result<()> {
+            Err(err())
+        }
+        fn pick_option(&self, _alias: &str, _option_index: usize) -> Result<()> {
+            Err(err())
+        }
+        fn cont(&self, _alias: &str, _agent: AgentKind) -> Result<()> {
+            Err(err())
+        }
+        fn cycle_mode(&self, _alias: &str, _agent: AgentKind) -> Result<()> {
+            Err(err())
+        }
+        fn slash(&self, _alias: &str, _agent: AgentKind, _cmd: &str) -> Result<()> {
+            Err(err())
+        }
+    }
 }

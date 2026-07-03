@@ -42,19 +42,86 @@ pub fn parse_semver(s: &str) -> (u32, u32, u32) {
 }
 
 pub fn env_status() -> EnvStatus {
-    let home = dirs::home_dir();
-    let vscode = Path::new("/Applications/Visual Studio Code.app").exists()
-        || home
-            .as_ref()
-            .map(|h| h.join(".vscode").join("extensions").exists())
-            .unwrap_or(false);
-    let dir = ext_native_dir().ok();
+    let dirs = ext_native_dirs();
+    let best = ext_native_dir().ok();
     EnvStatus {
-        vscode,
-        extension: dir.is_some(),
-        shim_installed: dir.as_deref().map(is_installed).unwrap_or(false),
-        version: dir.as_deref().and_then(ext_version),
+        vscode: vscode_present(),
+        extension: !dirs.is_empty(),
+        shim_installed: dirs.iter().any(|d| is_installed(d)),
+        version: best.as_deref().and_then(ext_version),
     }
+}
+
+const EXT_ROOT_DIRS: &[&str] = &[
+    ".vscode",
+    ".vscode-insiders",
+    ".vscode-oss",
+    ".vscodium",
+    ".cursor",
+    ".windsurf",
+];
+
+const EDITOR_BINS: &[&str] = &[
+    "code",
+    "code-insiders",
+    "codium",
+    "vscodium",
+    "code-oss",
+    "cursor",
+];
+
+fn vscode_present() -> bool {
+    if Path::new("/Applications/Visual Studio Code.app").exists() {
+        return true;
+    }
+    if !ext_roots().is_empty() {
+        return true;
+    }
+    if EDITOR_BINS.iter().any(|b| which(b)) {
+        return true;
+    }
+    let mut fixed: Vec<PathBuf> = [
+        "/usr/share/code",
+        "/usr/bin/code",
+        "/opt/visual-studio-code",
+        "/snap/bin/code",
+        "/var/lib/flatpak/app/com.visualstudio.code",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect();
+    if let Some(home) = dirs::home_dir() {
+        fixed.push(home.join(".local/share/flatpak/app/com.visualstudio.code"));
+    }
+    fixed.iter().any(|p| p.exists())
+}
+
+fn which(bin: &str) -> bool {
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("command -v {bin} >/dev/null 2>&1"))
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn ext_roots() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for d in EXT_ROOT_DIRS {
+        let p = home.join(d).join("extensions");
+        if !p.exists() {
+            continue;
+        }
+        let key = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+        if seen.insert(key) {
+            out.push(p);
+        }
+    }
+    out
 }
 
 fn install_one(dir: &Path) -> Result<String> {
@@ -125,26 +192,24 @@ fn ext_version(native_dir: &Path) -> Option<String> {
 }
 
 fn ext_native_dir() -> Result<PathBuf> {
-    let ext = dirs::home_dir()
-        .context("no home dir")?
-        .join(".vscode")
-        .join("extensions");
     let mut best: Option<((u32, u32, u32), PathBuf)> = None;
-    for entry in std::fs::read_dir(&ext)
-        .context("read extensions dir")?
-        .flatten()
-    {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if let Some(ver) = name.strip_prefix("anthropic.claude-code-") {
-            let dir = entry.path().join("resources").join("native-binary");
-            if dir.join("claude").exists() || dir.join("claude.real").exists() {
-                let sv = parse_semver(ver);
-                let take = match &best {
-                    Some((v, _)) => sv > *v,
-                    None => true,
-                };
-                if take {
-                    best = Some((sv, dir));
+    for ext in ext_roots() {
+        let Ok(rd) = std::fs::read_dir(&ext) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if let Some(ver) = name.strip_prefix("anthropic.claude-code-") {
+                let dir = entry.path().join("resources").join("native-binary");
+                if dir.join("claude").exists() || dir.join("claude.real").exists() {
+                    let sv = parse_semver(ver);
+                    let take = match &best {
+                        Some((v, _)) => sv > *v,
+                        None => true,
+                    };
+                    if take {
+                        best = Some((sv, dir));
+                    }
                 }
             }
         }
@@ -154,18 +219,16 @@ fn ext_native_dir() -> Result<PathBuf> {
 }
 
 fn ext_native_dirs() -> Vec<PathBuf> {
-    let Some(home) = dirs::home_dir() else {
-        return Vec::new();
-    };
-    let ext = home.join(".vscode").join("extensions");
     let mut out = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(&ext) {
-        for entry in rd.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("anthropic.claude-code-") {
-                let dir = entry.path().join("resources").join("native-binary");
-                if dir.join("claude").exists() || dir.join("claude.real").exists() {
-                    out.push(dir);
+    for ext in ext_roots() {
+        if let Ok(rd) = std::fs::read_dir(&ext) {
+            for entry in rd.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("anthropic.claude-code-") {
+                    let dir = entry.path().join("resources").join("native-binary");
+                    if dir.join("claude").exists() || dir.join("claude.real").exists() {
+                        out.push(dir);
+                    }
                 }
             }
         }
@@ -194,29 +257,43 @@ fn install() -> Result<()> {
 }
 
 fn uninstall() -> Result<()> {
-    let dir = ext_native_dir()?;
-    let claude = dir.join("claude");
-    let real = dir.join("claude.real");
-    if real.exists() {
-        std::fs::rename(&real, &claude).context("restore real binary")?;
-        println!("restored real binary at {}", claude.display());
-    } else {
+    let dirs = ext_native_dirs();
+    if dirs.is_empty() {
+        bail!("Claude Code extension native-binary directory not found");
+    }
+    let mut restored = 0;
+    for dir in &dirs {
+        let claude = dir.join("claude");
+        let real = dir.join("claude.real");
+        if real.exists() {
+            std::fs::rename(&real, &claude)
+                .with_context(|| format!("restore real binary at {}", claude.display()))?;
+            println!("restored real binary at {}", claude.display());
+            restored += 1;
+        }
+    }
+    if restored == 0 {
         println!("no claude.real found; nothing to restore");
     }
     Ok(())
 }
 
 fn status() -> Result<()> {
-    let dir = ext_native_dir()?;
-    println!("dir: {}", dir.display());
-    for name in ["claude", "claude.real"] {
-        let p = dir.join(name);
-        match std::fs::metadata(&p) {
-            Ok(m) => println!("{name}: {} bytes", m.len()),
-            Err(_) => println!("{name}: absent"),
-        }
+    let dirs = ext_native_dirs();
+    if dirs.is_empty() {
+        bail!("Claude Code extension native-binary directory not found");
     }
-    println!("installed: {}", is_installed(&dir));
+    for dir in &dirs {
+        println!("dir: {}", dir.display());
+        for name in ["claude", "claude.real"] {
+            let p = dir.join(name);
+            match std::fs::metadata(&p) {
+                Ok(m) => println!("  {name}: {} bytes", m.len()),
+                Err(_) => println!("  {name}: absent"),
+            }
+        }
+        println!("  installed: {}", is_installed(dir));
+    }
     Ok(())
 }
 

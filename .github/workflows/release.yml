@@ -11,13 +11,21 @@ permissions:
   attestations: write
 
 jobs:
-  build-and-release:
-    runs-on: macos-14
+  test:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
       - name: Install Rust
-        run: rustup toolchain install stable --profile minimal
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup component add rustfmt clippy
+
+      - name: Install GUI dev libs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libgl1-mesa-dev libxcb1-dev libxcursor-dev libxi-dev libxrandr-dev libfontconfig1-dev
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -28,9 +36,21 @@ jobs:
       - name: Check
         run: |
           cargo fmt --all -- --check
-          cargo clippy --all-targets --all-features -- -D warnings
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
           cargo test --workspace --all-features
           cargo audit
+
+  build-macos:
+    needs: test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
 
       - name: Build app and dmg
         run: |
@@ -53,6 +73,69 @@ jobs:
           hdiutil attach build/VSCRelay.dmg -mountpoint "$MOUNT_DIR" -nobrowse -quiet
           test -d "$MOUNT_DIR/VSCRelay.app"
 
+      - name: Upload dmg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: build/VSCRelay.dmg
+          if-no-files-found: error
+
+  build-linux:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust + musl
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add x86_64-unknown-linux-musl
+
+      - name: Install build deps (musl + GUI)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libgl1-mesa-dev libxcb1-dev libxcursor-dev libxi-dev \
+            libxrandr-dev libfontconfig1-dev
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build linux tarball
+        run: |
+          export APP_VERSION="${GITHUB_REF_NAME#v}"
+          echo "building linux tarball $APP_VERSION (static musl)"
+          ./build_linux.sh x86_64-unknown-linux-musl
+
+      - name: Upload linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-tarball
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/*.deb
+            dist/*.deb.sha256
+          if-no-files-found: error
+
+  release:
+    needs: [build-macos, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release files
+        run: |
+          mkdir -p build
+          cp artifacts/macos-dmg/VSCRelay.dmg build/
+          cp artifacts/linux-tarball/*.tar.gz build/
+          cp artifacts/linux-tarball/*.deb build/
+
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@v0
         with:
@@ -64,12 +147,15 @@ jobs:
       - name: Generate checksums
         run: |
           cd build
-          shasum -a 256 VSCRelay.dmg VSCRelay.spdx.json > SHA256SUMS
+          sha256sum VSCRelay.dmg *.tar.gz *.deb VSCRelay.spdx.json > SHA256SUMS
 
-      - name: Attest dmg provenance
+      - name: Attest build provenance
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: build/VSCRelay.dmg
+          subject-path: |
+            build/VSCRelay.dmg
+            build/*.tar.gz
+            build/*.deb
 
       - name: Publish release
         uses: softprops/action-gh-release@v3
@@ -77,6 +163,8 @@ jobs:
           name: VS Code Agent Relay ${{ github.ref_name }}
           files: |
             build/VSCRelay.dmg
+            build/*.tar.gz
+            build/*.deb
             build/SHA256SUMS
             build/VSCRelay.spdx.json
           generate_release_notes: true

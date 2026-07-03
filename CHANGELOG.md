@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+- Linux support alongside macOS. The daemon, shim, discovery, and Telegram control all run
+  on Linux; the shim background path (send, answer questions, permissions, model/effort/mode)
+  is display-independent.
+- New Linux desktop app `vsc-relay-gui` (egui, runs on any desktop environment): token /
+  pairing-key settings, start/stop, live log, sessions/turns/shim/version dashboard, shim
+  install, and launch-at-login via an XDG autostart entry. Config lives in the same
+  `~/.config/vsc-relay/relay.env` the systemd service reads.
+- New `relay-control` Linux backend for window focus and GUI fallback via `xdotool` /
+  `xclip` / `xdg-open` on X11 (XWayland tolerated; native Wayland limited to the shim path),
+  with VS Code / Insiders / VSCodium / Cursor / Code-OSS / Windsurf window matching.
+- Shim discovery now scans multiple editor extension roots (`.vscode`, `.vscode-insiders`,
+  `.vscode-oss`, `.vscodium`, `.cursor`, `.windsurf`).
+- Linux packaging: `build_linux.sh` produces a static (musl) `dist/*.tar.gz` **and a `.deb`**
+  (Debian/Ubuntu, `sudo apt install ./vsc-relay_*.deb`) with a systemd user service, desktop
+  launcher, and `install.sh` / `uninstall.sh`; `release.sh` is now OS-aware.
+- Linux self-update: `vsc-relay-agent self-update [--check]` downloads the latest release,
+  verifies its sha256, atomically swaps the binaries, and re-wraps the shim. The GUI surfaces
+  it as an update banner plus an **Auto-update** toggle in Settings.
+- Multiple machines: run one bot per machine for now (each token is separate, so no 409); a
+  single-bot multi-machine hub is on the roadmap.
+- CI builds and publishes the macOS dmg, the Linux tarball, and the `.deb` from a single
+  tagged release, after a shared fmt/clippy/test/audit gate.
+
 ## 0.1.4
 
 - Clarified the public README with purpose, support matrix, install flow, Telegram commands,

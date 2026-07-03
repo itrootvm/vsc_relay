@@ -10,6 +10,7 @@ mod inject;
 mod install;
 mod permission;
 mod question;
+mod self_update;
 mod shimctl;
 mod stats;
 mod telegram;
@@ -78,6 +79,9 @@ async fn main() -> anyhow::Result<()> {
         }
         if shimctl::is_shim_command(first) {
             return shimctl::run(&raw);
+        }
+        if self_update::is_self_update_command(first) {
+            return self_update::run(&raw).await;
         }
     }
 

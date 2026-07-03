@@ -15,7 +15,10 @@ pub fn scan(paths: &Paths) -> Vec<WindowEntry> {
         .filter(|l| ide_lock::is_port_live(l.port))
         .collect();
     let all_sessions = sessions::read_all(&paths.claude_sessions_dir());
-    let storage_folders = vscode::open_workspace_folders(&paths.vscode_storage_json());
+    let mut storage_folders: Vec<PathBuf> = Vec::new();
+    for storage in paths.vscode_storage_jsons() {
+        storage_folders.extend(vscode::open_workspace_folders(&storage));
+    }
 
     let mut lock_by_ws: BTreeMap<PathBuf, (&ide_lock::IdeLock, PathBuf)> = BTreeMap::new();
     for l in &live_locks {

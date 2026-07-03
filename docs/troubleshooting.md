@@ -15,12 +15,21 @@ open `/menu` again.
 For Claude Code, install the shim and start a new Claude Code chat after installation.
 Already-open chats keep using the helper binary they started with.
 
-For Codex, this is expected in `0.1.4`. Codex background control is not implemented.
+For Codex, this is expected. Codex background control is not implemented yet.
 
 ## Focus Does Not Work
 
-Grant Accessibility permission to the app or terminal that runs the relay. Then restart the
-relay and try `/focus <workspace>` again.
+On macOS, grant Accessibility permission to the app or terminal that runs the relay. Then
+restart the relay and try `/focus <workspace>` again.
+
+On Linux, window focus and GUI fallback need an X11 (or XWayland) session and `xdotool`
+(`sudo apt install xdotool xclip xdg-utils`). Under a native Wayland session the compositor
+usually blocks key injection into other windows; prefer an X11/Xorg session for the GUI
+fallback. If the relay runs as a systemd user service, it must inherit `DISPLAY` — the
+installer runs `systemctl --user import-environment DISPLAY XAUTHORITY WAYLAND_DISPLAY
+XDG_SESSION_TYPE`; re-run it and restart the service if you started the session differently. The background shim path does
+not need a display and keeps working regardless, so sending, answering questions,
+permissions, and model/effort/mode work even when `/focus` does not.
 
 ## The Shim Looks Broken
 

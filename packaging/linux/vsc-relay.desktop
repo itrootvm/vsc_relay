@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=VS Code Agent Relay
+Comment=Control Claude Code in VS Code from Telegram
+Exec=@BIN@
+Terminal=false
+Categories=Development;Utility;
+StartupNotify=true
+Keywords=telegram;claude;vscode;relay;

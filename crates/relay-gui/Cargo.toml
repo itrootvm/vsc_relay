@@ -1,0 +1,21 @@
+[package]
+name = "relay-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "vsc-relay-gui"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.28", default-features = false, features = [
+    "glow",
+    "default_fonts",
+    "wayland",
+    "x11",
+] }
+serde_json.workspace = true
+dirs.workspace = true
+libc = "0.2"
