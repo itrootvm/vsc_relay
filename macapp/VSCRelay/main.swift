@@ -48,7 +48,7 @@ final class RelayController: ObservableObject {
     @Published var showSettings: Bool = false
     @Published var showHelp: Bool = false
     @Published var appUpdate: String = ""
-    let releasesURL = "https://github.com/itrootvm/vsc_parser/releases/latest"
+    let releasesURL = "https://github.com/itrootvm/vsc_relay/releases/latest"
     @Published var turnsToday: Int = 0
     @Published var sessionsToday: Int = 0
     @Published var vscodeOK: Bool = true
@@ -291,7 +291,7 @@ final class RelayController: ObservableObject {
     }
 
     func checkAppUpdate() {
-        guard let url = URL(string: "https://api.github.com/repos/itrootvm/vsc_parser/releases/latest") else { return }
+        guard let url = URL(string: "https://api.github.com/repos/itrootvm/vsc_relay/releases/latest") else { return }
         var req = URLRequest(url: url)
         req.setValue("VSCRelay", forHTTPHeaderField: "User-Agent")
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
