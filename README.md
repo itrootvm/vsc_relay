@@ -3,23 +3,39 @@
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-lightgrey.svg)
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)
-![Latest release](https://img.shields.io/github/v/release/itrootvm/vsc_parser?sort=semver)
+![For Claude Code](https://img.shields.io/badge/for-Claude%20Code-5A3FD6.svg)
+![Control via Telegram](https://img.shields.io/badge/control-Telegram-26A5E4.svg)
+![Latest release](https://img.shields.io/github/v/release/itrootvm/vsc_relay?sort=semver)
+![Downloads](https://img.shields.io/github/downloads/itrootvm/vsc_relay/total.svg)
+![Stars](https://img.shields.io/github/stars/itrootvm/vsc_relay.svg?style=flat)
+![Last commit](https://img.shields.io/github/last-commit/itrootvm/vsc_relay.svg)
 
-Watch and control your Claude Code chats inside VS Code from Telegram.
+**Your coding agent keeps working after you walk away. This keeps you in control of it,
+from your phone.**
 
-You start a long task in a coding agent, then you leave the desk. The agent keeps
-working, and at some point it stops and waits: it finished a turn, it hit an error, it
-wants to run a command it is not sure about, or it is asking you a multiple-choice
-question. Normally that means the work is parked until you are back at the keyboard. This
-tool closes that gap. From a Telegram chat on your phone you can see what each session is
-doing, read the last messages, send a new instruction, answer the question it asked,
-approve or block a risky command, switch the model or reasoning effort, and change the
-permission mode. You do this without walking back to the machine and without it flipping
-windows around on screen, because the control happens in the background.
+You start a long task in Claude Code and leave the desk. Ten minutes later it is waiting on
+a question, or asking to run a command it is not sure about, or one keystroke away from an
+`rm -rf` or a `git push --force` you never wanted. You are not there, so the work stalls, or
+something you needed is gone.
 
-It runs as a small local service on your Mac, talks to your Telegram bot, and does its
-reading by tailing the files the agent already writes to disk. It is written in Rust,
-ships as a self-contained macOS app, and is built for macOS first.
+VS Code Agent Relay puts every VS Code agent session into your Telegram. Read what each one
+is doing, answer the questions it asks, approve or block the exact command it wants to run,
+switch its model or mode, and send it a new instruction. All from your phone, in the
+background, without touching the Mac.
+
+Tired of coming back to a stalled task, or a deletion you never approved? That is what this
+is for.
+
+![The app](docs/screenshot.png)
+
+**Safety is the whole point.** Destructive commands like `rm -rf`, `drop table`, and
+`git push --force` are caught before they run and held for your yes or no. Nothing on the
+Telegram side works until it pairs with your secret key. Your bot token never leaves your
+Mac: it lives in the Keychain and is never sent to a chat. The service opens no inbound
+network port. Being reachable from your phone never means being reachable by anyone else.
+
+It runs as a small local service on your Mac, is written in Rust, and ships as a
+self-contained macOS app that needs nothing else installed.
 
 ## What it does
 
@@ -104,7 +120,7 @@ This is for everyone. You do not need Rust, Xcode, or a terminal. The app alread
 the compiled binaries inside it, so it runs on a stock Mac with nothing else installed.
 
 1. Download `VSCRelay.dmg` from the
-   [Releases page](https://github.com/itrootvm/vsc_parser/releases/latest), open it, and drag
+   [Releases page](https://github.com/itrootvm/vsc_relay/releases/latest), open it, and drag
    the app onto the Applications folder shown in the window. `INSTALL.txt` in the same window
    repeats these steps.
 2. Open it from Applications. The first time, right click the app and choose Open, so
@@ -260,14 +276,15 @@ rm -rf ~/.vsc-relay
 
 ## Roadmap
 
+- Linux support (Ubuntu) is next, and Windows follows. The core, the transport, and the
+  adapters are already kept separate from the macOS-specific control layer, so the other
+  platforms slot in without touching the rest.
 - Interactive background control for Codex (send and answer in the background), to match
   what Claude Code already supports.
 - A universal build so the app also runs on Intel Macs. The current build targets Apple
   Silicon.
 - More reliable detection of a Claude Code session that is stuck waiting on a permission
   prompt, so it always shows up as an actionable card rather than looking busy.
-- Windows and Linux agents. The core, the transport, and the adapters are kept separate
-  from the macOS-specific control layer so other platforms can slot in later.
 - Multiple machines reporting into one Telegram bot.
 
 ## Contributing
