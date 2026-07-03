@@ -85,6 +85,38 @@ pub fn parse_request(line: &str) -> Option<HookRequest> {
     })
 }
 
+fn is_bare_url(t: &str) -> bool {
+    let has_scheme = t.starts_with("http://")
+        || t.starts_with("https://")
+        || t.starts_with("ws://")
+        || t.starts_with("wss://");
+    has_scheme && !t.chars().any(char::is_whitespace)
+}
+
+pub fn redact_url(url: &str) -> String {
+    if let Some((scheme, rest)) = url.split_once("://") {
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+        let host = authority.rsplit('@').next().unwrap_or(authority);
+        return format!("{scheme}://{host}");
+    }
+    "url".to_string()
+}
+
+pub fn redact_raw(tool: &str, target: Option<&str>) -> String {
+    let Some(t) = target else {
+        return tool.to_string();
+    };
+    if is_bare_url(t.trim()) {
+        return format!("{tool} {}", redact_url(t.trim()));
+    }
+    let first = t.split_whitespace().next().unwrap_or("");
+    let name = std::path::Path::new(first)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(first);
+    format!("{tool} {name} ({}b)", t.len())
+}
+
 pub fn tool_summary(payload: &Value) -> (String, Option<String>, String) {
     let tool = payload
         .get("tool_name")
@@ -150,4 +182,36 @@ pub fn is_destructive(target: &Option<String>) -> bool {
     let Some(t) = target else { return false };
     let lower = t.to_lowercase();
     danger_patterns().iter().any(|d| lower.contains(d.as_str()))
+}
+
+#[cfg(test)]
+mod redact_tests {
+    use super::redact_raw;
+
+    #[test]
+    fn command_with_embedded_url_does_not_leak() {
+        let cmd = "timeout 380 ssh -i ~/.ssh/sent -o StrictHostKeyChecking=no vmashnin@10.10.22.232 'G=http://10.10.22.232:31080; curl $G'";
+        let out = redact_raw("Bash", Some(cmd));
+        for secret in ["ssh", "sent", "vmashnin", "http", "curl", "StrictHost"] {
+            assert!(!out.contains(secret), "leaked {secret:?} in {out:?}");
+        }
+        assert!(out.starts_with("Bash timeout ("), "got {out:?}");
+    }
+
+    #[test]
+    fn bare_url_keeps_only_scheme_host() {
+        let out = redact_raw("WebFetch", Some("https://admin:S3cr3t@internal.example.com/api?token=abc"));
+        assert_eq!(out, "WebFetch https://internal.example.com");
+    }
+
+    #[test]
+    fn file_path_is_basename_only() {
+        let out = redact_raw("Edit", Some("/Users/itodev/.ssh/id_rsa"));
+        assert!(!out.contains("/Users") && !out.contains(".ssh"), "got {out:?}");
+    }
+
+    #[test]
+    fn none_target_is_tool_only() {
+        assert_eq!(redact_raw("Workflow", None), "Workflow");
+    }
 }

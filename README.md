@@ -257,6 +257,14 @@ cargo audit
 
 Do not commit `.env`, tokens, local logs, `target/`, or `build/`.
 
+## Maintainer
+
+Maintained by [itrootvm](https://github.com/itrootvm).
+
+Quick contact: [@chossi](https://t.me/chossi).
+Bugs and feature requests: use GitHub Issues.
+Security reports: see [SECURITY.md](SECURITY.md).
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

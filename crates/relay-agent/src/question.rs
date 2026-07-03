@@ -10,6 +10,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::Mutex;
+use tracing::info;
 
 pub struct Pending {
     pub request_id: String,
@@ -93,11 +94,17 @@ async fn reader(
         }
     }
     watched.lock().await.remove(&pid);
-    let mut map = q.lock().await;
-    if let Some(p) = map.remove(&pid) {
+    if let Some(p) = q.lock().await.remove(&pid) {
         for (c, m) in p.cards {
             let _ = tg
                 .edit_message_text(c, m, "session closed - question is no longer active", None)
+                .await;
+        }
+    }
+    for cards in permission::drain_pid(&perms, pid).await {
+        for (c, m) in cards {
+            let _ = tg
+                .edit_message_text(c, m, "session closed - permission is no longer active", None)
                 .await;
         }
     }
@@ -129,6 +136,7 @@ async fn handle_stream_line(
                 .unwrap_or("")
                 .to_string();
             let alias = session_alias(pid).unwrap_or_else(|| format!("pid {pid}"));
+            info!(target: "relay::perm", pid, tool = %tool, request_id = %request_id, "can_use_tool observed");
             if tool == "AskUserQuestion" {
                 let tool_use_id = req
                     .and_then(|r| r.get("tool_use_id"))
@@ -156,6 +164,11 @@ async fn handle_stream_line(
                 }
                 q.lock().await.insert(pid, pending);
             } else {
+                let tool_use_id = req
+                    .and_then(|r| r.get("tool_use_id"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let input = req
                     .and_then(|r| r.get("input"))
                     .cloned()
@@ -167,6 +180,7 @@ async fn handle_stream_line(
                     pid,
                     alias,
                     request_id,
+                    tool_use_id,
                     tool.to_string(),
                     input,
                 )
@@ -188,6 +202,13 @@ async fn handle_stream_line(
                     .edit_message_text(c, m, "answered in VS Code", None)
                     .await;
             }
+        }
+    }
+    for cards in permission::void_referenced(perms, pid, v).await {
+        for (c, m) in cards {
+            let _ = tg
+                .edit_message_text(c, m, "answered in VS Code", None)
+                .await;
         }
     }
 }
