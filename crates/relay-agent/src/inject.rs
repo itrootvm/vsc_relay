@@ -47,7 +47,7 @@ pub fn available_pid(session_id: &str) -> Option<u32> {
     }
 }
 
-fn pid_alive(pid: u32) -> bool {
+pub(crate) fn pid_alive(pid: u32) -> bool {
     let res = unsafe { libc::kill(pid as i32, 0) };
     if res == 0 {
         return true;

@@ -118,6 +118,13 @@ async fn main() -> anyhow::Result<()> {
             .join(".vsc-relay"),
     );
 
+    if std::env::var_os("VSC_RELAY_NO_RESHIM").is_none() {
+        match shimctl::install_shim() {
+            Ok(msg) => info!("auto-reshim: {}", msg.replace('\n', "; ")),
+            Err(e) => warn!("auto-reshim skipped: {e}"),
+        }
+    }
+
     if args.once {
         let mut tracker = HashMap::new();
         scan_and_emit(
@@ -228,6 +235,11 @@ async fn main() -> anyhow::Result<()> {
         ));
         tokio::spawn(updates::watch(tg.clone(), auth.clone()));
         tokio::spawn(updates::marketplace_watch(tg.clone(), auth.clone()));
+        tokio::spawn(untapped_watch(
+            tg.clone(),
+            auth.clone(),
+            cfg.machine_name.clone(),
+        ));
 
         let poller = tokio::spawn(poll_commands(
             tg.clone(),
@@ -268,6 +280,96 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+async fn untapped_watch(tg: Arc<Telegram>, auth: Arc<auth::Auth>, machine: String) {
+    use std::collections::HashSet;
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    let out_dir = home.join(".vsc-relay").join("out");
+    let sessions_dir = home.join(".claude").join("sessions");
+    let mut warned: HashSet<u32> = HashSet::new();
+    let mut prev: HashSet<u32> = HashSet::new();
+    loop {
+        tokio::time::sleep(Duration::from_secs(45)).await;
+        let tapped = pids_in_dir(&out_dir);
+        let live = live_session_pids(&sessions_dir);
+        let untapped: HashSet<u32> = live.difference(&tapped).copied().collect();
+        let fresh: Vec<u32> = untapped
+            .intersection(&prev)
+            .copied()
+            .filter(|p| !warned.contains(p))
+            .collect();
+        if !fresh.is_empty() {
+            let mut aliases: Vec<String> = Vec::new();
+            for p in &fresh {
+                warned.insert(*p);
+                let a = pid_alias(&sessions_dir, *p).unwrap_or_else(|| format!("pid {p}"));
+                warn!(target: "relay::perm", pid = p, alias = %a, "session not tapped; permissions cannot be approved from Telegram");
+                if !aliases.contains(&a) {
+                    aliases.push(a);
+                }
+            }
+            let text = format!(
+                "⚠️ <b>{}</b>\n{} session(s) are running without remote control - restart them in VS Code to approve permissions from Telegram:\n<code>{}</code>",
+                esc_html(&machine),
+                fresh.len(),
+                esc_html(&aliases.join(", "))
+            );
+            for chat in auth.recipients().await {
+                let _ = tg.send(chat, &text, None).await;
+            }
+        }
+        warned.retain(|p| untapped.contains(p));
+        prev = untapped;
+    }
+}
+
+fn pids_in_dir(dir: &std::path::Path) -> std::collections::HashSet<u32> {
+    let mut set = std::collections::HashSet::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            if let Some(pid) = e
+                .path()
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.parse::<u32>().ok())
+            {
+                set.insert(pid);
+            }
+        }
+    }
+    set
+}
+
+fn live_session_pids(dir: &std::path::Path) -> std::collections::HashSet<u32> {
+    let mut set = std::collections::HashSet::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            if let Some(pid) = p
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.parse::<u32>().ok())
+            {
+                if inject::pid_alive(pid) {
+                    set.insert(pid);
+                }
+            }
+        }
+    }
+    set
+}
+
+fn pid_alias(dir: &std::path::Path, pid: u32) -> Option<String> {
+    let txt = std::fs::read_to_string(dir.join(format!("{pid}.json"))).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
+    let cwd = v.get("cwd").and_then(|x| x.as_str())?;
+    std::path::Path::new(cwd)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
 }
 
 fn parse_daemon_args(args: &[String]) -> anyhow::Result<DaemonArgs> {
@@ -1461,9 +1563,12 @@ async fn handle_callback(
         let mut it = rest.splitn(2, ':');
         let verb = it.next().unwrap_or("");
         let allow = verb == "a";
-        let ok = match it.next().and_then(|p| p.parse::<u32>().ok()) {
-            Some(pid) => permission::resolve(perms, pid, allow).await,
-            None => Err("bad pid".to_string()),
+        let ok = match it.next() {
+            Some(enc) => {
+                let reqid = actions::decode(enc).unwrap_or_else(|| enc.to_string());
+                permission::resolve(perms, &reqid, allow).await
+            }
+            None => Err("bad id".to_string()),
         };
         let (note, label) = match ok {
             Ok(cards) => {

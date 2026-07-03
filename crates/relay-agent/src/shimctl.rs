@@ -57,12 +57,10 @@ pub fn env_status() -> EnvStatus {
     }
 }
 
-pub fn install_shim() -> Result<String> {
-    let dir = ext_native_dir()?;
+fn install_one(dir: &Path) -> Result<String> {
     let claude = dir.join("claude");
     let real = dir.join("claude.real");
     let shim = shim_binary()?;
-    let mut msg = String::new();
 
     if !real.exists() {
         let size = std::fs::metadata(&claude).map(|m| m.len()).unwrap_or(0);
@@ -74,14 +72,35 @@ pub fn install_shim() -> Result<String> {
             );
         }
         std::fs::rename(&claude, &real).context("move real binary aside")?;
-        msg.push_str("moved real binary to claude.real\n");
     }
 
     let tmp = dir.join(format!("claude.tmp.{}", std::process::id()));
     std::fs::copy(&shim, &tmp).context("copy shim into place")?;
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).context("chmod shim")?;
     std::fs::rename(&tmp, &claude).context("atomic swap shim")?;
-    msg.push_str(&format!("installed shim at {}", claude.display()));
+    Ok(format!("installed shim at {}", claude.display()))
+}
+
+pub fn install_shim() -> Result<String> {
+    let dirs = ext_native_dirs();
+    if dirs.is_empty() {
+        bail!("Claude Code extension native-binary directory not found");
+    }
+    let mut ok: Vec<String> = Vec::new();
+    let mut errs: Vec<String> = Vec::new();
+    for dir in &dirs {
+        match install_one(dir) {
+            Ok(m) => ok.push(m),
+            Err(e) => errs.push(format!("{}: {e}", dir.display())),
+        }
+    }
+    if ok.is_empty() {
+        bail!("shim install failed everywhere: {}", errs.join("; "));
+    }
+    let mut msg = ok.join("\n");
+    if !errs.is_empty() {
+        msg.push_str(&format!("\nskipped: {}", errs.join("; ")));
+    }
     Ok(msg)
 }
 
@@ -132,6 +151,26 @@ fn ext_native_dir() -> Result<PathBuf> {
     }
     best.map(|(_, d)| d)
         .context("Claude Code extension native-binary directory not found")
+}
+
+fn ext_native_dirs() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let ext = home.join(".vscode").join("extensions");
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&ext) {
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("anthropic.claude-code-") {
+                let dir = entry.path().join("resources").join("native-binary");
+                if dir.join("claude").exists() || dir.join("claude.real").exists() {
+                    out.push(dir);
+                }
+            }
+        }
+    }
+    out
 }
 
 fn shim_binary() -> Result<PathBuf> {

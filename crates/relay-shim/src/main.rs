@@ -12,6 +12,40 @@ enum Msg {
     Close,
 }
 
+fn cancel_enabled() -> bool {
+    if std::env::var_os("VSC_RELAY_NO_CANCEL").is_some() {
+        return false;
+    }
+    !dirs_home().join(".vsc-relay").join("no-cancel").exists()
+}
+
+fn is_control_response(line: &[u8]) -> bool {
+    std::str::from_utf8(line)
+        .map(|s| s.contains("control_response"))
+        .unwrap_or(false)
+}
+
+fn response_request_id(line: &[u8]) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_slice(line).ok()?;
+    if v.get("type").and_then(|t| t.as_str()) != Some("control_response") {
+        return None;
+    }
+    v.get("response")
+        .and_then(|r| r.get("request_id"))
+        .and_then(|x| x.as_str())
+        .map(str::to_string)
+}
+
+fn emit_cancel(ext_out: &Arc<Mutex<std::io::Stdout>>, request_id: &str) {
+    let v = serde_json::json!({"type": "control_cancel_request", "request_id": request_id});
+    let mut line = v.to_string();
+    line.push('\n');
+    if let Ok(mut o) = ext_out.lock() {
+        let _ = o.write_all(line.as_bytes());
+        let _ = o.flush();
+    }
+}
+
 fn real_path() -> PathBuf {
     std::env::current_exe()
         .expect("current_exe")
@@ -144,9 +178,11 @@ fn main() {
             });
         }
     }
+    let ext_out: Arc<Mutex<std::io::Stdout>> = Arc::new(Mutex::new(std::io::stdout()));
+
     let readers_pump = readers.clone();
+    let ext_out_pump = ext_out.clone();
     std::thread::spawn(move || {
-        let mut out = std::io::stdout();
         let mut r = BufReader::new(child_stdout);
         let mut line = Vec::new();
         loop {
@@ -154,12 +190,17 @@ fn main() {
             match r.read_until(b'\n', &mut line) {
                 Ok(0) => break,
                 Ok(_) => {
-                    if out.write_all(&line).is_err() {
-                        break;
-                    }
-                    let _ = out.flush();
                     if let Ok(mut rs) = readers_pump.lock() {
                         rs.retain_mut(|s| s.write_all(&line).and_then(|_| s.flush()).is_ok());
+                    }
+                    match ext_out_pump.lock() {
+                        Ok(mut o) => {
+                            if o.write_all(&line).is_err() {
+                                break;
+                            }
+                            let _ = o.flush();
+                        }
+                        Err(_) => break,
                     }
                 }
                 Err(_) => break,
@@ -192,9 +233,11 @@ fn main() {
         let _ = std::fs::remove_file(&path);
         if let Ok(listener) = UnixListener::bind(&path) {
             let tx_inj = tx.clone();
+            let ext_out_inj = ext_out.clone();
             std::thread::spawn(move || {
                 for conn in listener.incoming().flatten() {
                     let tx_c = tx_inj.clone();
+                    let eo = ext_out_inj.clone();
                     std::thread::spawn(move || {
                         let mut r = BufReader::new(conn);
                         let mut line = Vec::new();
@@ -203,12 +246,22 @@ fn main() {
                             match r.read_until(b'\n', &mut line) {
                                 Ok(0) => break,
                                 Ok(_) => {
+                                    let cancel = if is_control_response(&line) {
+                                        response_request_id(&line)
+                                    } else {
+                                        None
+                                    };
                                     let mut out = line.clone();
                                     if out.last() != Some(&b'\n') {
                                         out.push(b'\n');
                                     }
                                     if tx_c.send(Msg::Data(out)).is_err() {
                                         break;
+                                    }
+                                    if let Some(id) = cancel {
+                                        if cancel_enabled() {
+                                            emit_cancel(&eo, &id);
+                                        }
                                     }
                                 }
                                 Err(_) => break,

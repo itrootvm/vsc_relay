@@ -10,3 +10,4 @@ name = "vsc-claude-shim"
 path = "src/main.rs"
 
 [dependencies]
+serde_json = { workspace = true }

@@ -82,6 +82,8 @@ async fn decide_pretool(ctx: &IngressCtx, payload: &Value) -> Value {
     let (tool, target, cwd) = hooks::tool_summary(payload);
     let alias = basename(&cwd);
     let danger = hooks::is_destructive(&target);
+    info!(target: "relay::hook", tool = %tool, alias = %alias, danger,
+        target = %hooks::redact_raw(&tool, target.as_deref()), "pre-tool-use hook received");
 
     if !danger {
         return json!({ "decision": "ask" });
@@ -115,10 +117,14 @@ async fn decide_pretool(ctx: &IngressCtx, payload: &Value) -> Value {
         let _ = tg.send(*chat, &text, Some(kb.clone())).await;
     }
 
+    info!(target: "relay::hook", tool = %tool, alias = %alias, reqid = %reqid,
+        chats = chats.len(), "dangerous permission forwarded; awaiting Telegram decision");
     match tokio::time::timeout(Duration::from_secs(APPROVAL_TIMEOUT_SECS), rxd).await {
         Ok(Ok(dec)) => dec,
         _ => {
             ctx.pending.lock().await.remove(&reqid);
+            warn!(target: "relay::hook", tool = %tool, alias = %alias, reqid = %reqid,
+                "no Telegram response; failing safe to ask (local prompt)");
             json!({ "decision": "ask", "reason": "no Telegram response" })
         }
     }
@@ -141,6 +147,7 @@ async fn notify(ctx: &IngressCtx, payload: &Value) {
     let waiting = msg.to_lowercase().contains("waiting")
         || msg.to_lowercase().contains("permission")
         || msg.to_lowercase().contains("input");
+    info!(target: "relay::hook", alias = %alias, waiting, msg_len = msg.len(), "notification hook received");
     let kb = if waiting {
         Some(keyboard(vec![
             vec![
