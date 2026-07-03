@@ -26,14 +26,15 @@ jobs:
           cargo clippy --all-targets --all-features -- -D warnings
           cargo test
 
-      - name: Stamp version from the tag
-        run: |
-          V="${GITHUB_REF_NAME#v}"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $V" macapp/Info.plist
-          echo "building version $V"
-
       - name: Build app and dmg
-        run: ./build_app.sh
+        run: |
+          export APP_VERSION="${GITHUB_REF_NAME#v}"
+          FILE_VERSION="$(cat VERSION 2>/dev/null || echo '')"
+          if [ -n "$FILE_VERSION" ] && [ "$FILE_VERSION" != "$APP_VERSION" ]; then
+            echo "::warning::VERSION file ($FILE_VERSION) does not match tag ($APP_VERSION); stamping the tag."
+          fi
+          echo "building version $APP_VERSION"
+          ./build_app.sh
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
