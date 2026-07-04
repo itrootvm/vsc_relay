@@ -957,6 +957,10 @@ fn pump(stream: impl Read, tx: Sender<String>, log_path: PathBuf) {
     }
 }
 
+#[cfg(windows)]
+fn kill_stray_daemons() {}
+
+#[cfg(unix)]
 fn kill_stray_daemons() {
     let me = std::process::id();
     let Ok(entries) = std::fs::read_dir("/proc") else {
@@ -996,10 +1000,8 @@ fn kill_stray_daemons() {
 
 fn random_hex(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        if f.read_exact(&mut buf).is_ok() {
-            return buf.iter().map(|b| format!("{b:02x}")).collect();
-        }
+    if getrandom::getrandom(&mut buf).is_ok() {
+        return buf.iter().map(|b| format!("{b:02x}")).collect();
     }
     let n = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1008,10 +1010,14 @@ fn random_hex(bytes: usize) -> String {
     format!("{n:032x}{:08x}", std::process::id())
 }
 
+#[cfg(unix)]
 fn set_mode(path: &PathBuf, mode: u32) {
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
 }
+
+#[cfg(windows)]
+fn set_mode(_path: &PathBuf, _mode: u32) {}
 
 fn open_url(url: &str) {
     let _ = Command::new("xdg-open")

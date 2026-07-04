@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 relay-core.workspace = true
+relay-ipc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
@@ -14,4 +15,6 @@ tracing.workspace = true
 anyhow.workspace = true
 dirs.workspace = true
 glob.workspace = true
+
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"

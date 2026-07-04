@@ -1,17 +1,10 @@
 use anyhow::{Context, Result};
-use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
+use relay_ipc::Endpoint;
+use std::io::Write;
 use std::path::PathBuf;
 
 fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"))
-}
-
-pub fn socket_for_pid(pid: u32) -> PathBuf {
-    home()
-        .join(".vsc-relay")
-        .join("inject")
-        .join(format!("{pid}.sock"))
 }
 
 pub fn resolve_pid(session_id: &str) -> Option<u32> {
@@ -40,7 +33,7 @@ pub fn resolve_pid(session_id: &str) -> Option<u32> {
 
 pub fn available_pid(session_id: &str) -> Option<u32> {
     let pid = resolve_pid(session_id)?;
-    if socket_for_pid(pid).exists() && pid_alive(pid) {
+    if relay_ipc::endpoint_available(&Endpoint::Inject(pid)) && pid_alive(pid) {
         Some(pid)
     } else {
         None
@@ -48,38 +41,17 @@ pub fn available_pid(session_id: &str) -> Option<u32> {
 }
 
 pub(crate) fn pid_alive(pid: u32) -> bool {
-    let res = unsafe { libc::kill(pid as i32, 0) };
-    if res == 0 {
-        return true;
-    }
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    relay_ipc::process_alive(pid)
 }
 
 pub fn sweep_stale_sockets() {
-    for sub in ["inject", "out"] {
-        let dir = home().join(".vsc-relay").join(sub);
-        let Ok(rd) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in rd.flatten() {
-            let path = entry.path();
-            let Some(pid) = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .and_then(|s| s.parse::<u32>().ok())
-            else {
-                continue;
-            };
-            if !pid_alive(pid) {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
-    }
+    relay_ipc::sweep_stale();
 }
 
 fn send_line(pid: u32, v: &serde_json::Value) -> Result<()> {
     let line = format!("{v}\n");
-    let mut s = UnixStream::connect(socket_for_pid(pid)).context("connect inject socket")?;
+    let mut s =
+        relay_ipc::connect_blocking(&Endpoint::Inject(pid)).context("connect inject socket")?;
     s.write_all(line.as_bytes()).context("write inject")?;
     s.flush().ok();
     Ok(())
@@ -132,9 +104,7 @@ pub fn set_mode(pid: u32, mode: &str) -> Result<()> {
 
 fn gen_uuid() -> String {
     let mut b = [0u8; 16];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        let _ = f.read_exact(&mut b);
-    }
+    let _ = getrandom::getrandom(&mut b);
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
     format!(

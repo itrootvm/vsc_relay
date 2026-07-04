@@ -208,12 +208,11 @@ fn extract(tarball: &Path, into: &Path) -> Result<()> {
 }
 
 fn install_atomic(src: &Path, dest: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
     let dir = dest.parent().context("dest dir")?;
     let file_name = dest.file_name().context("dest name")?.to_string_lossy();
     let tmp = dir.join(format!(".{file_name}.new"));
     std::fs::copy(src, &tmp).context("stage new binary")?;
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).context("chmod")?;
+    crate::fsutil::set_executable(&tmp).context("chmod")?;
     std::fs::rename(&tmp, dest).context("atomic rename")?;
     Ok(())
 }

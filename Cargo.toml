@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/relay-core",
+    "crates/relay-ipc",
     "crates/relay-discovery",
     "crates/relay-adapters",
     "crates/relay-control",
@@ -11,6 +12,7 @@ members = [
 ]
 default-members = [
     "crates/relay-core",
+    "crates/relay-ipc",
     "crates/relay-discovery",
     "crates/relay-adapters",
     "crates/relay-control",
@@ -26,6 +28,7 @@ license = "MIT"
 
 [workspace.dependencies]
 relay-core = { path = "crates/relay-core" }
+relay-ipc = { path = "crates/relay-ipc" }
 relay-discovery = { path = "crates/relay-discovery" }
 relay-adapters = { path = "crates/relay-adapters" }
 relay-control = { path = "crates/relay-control" }
@@ -44,3 +47,4 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 glob = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 notify = "6"
+getrandom = "0.2"
