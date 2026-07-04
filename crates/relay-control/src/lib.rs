@@ -33,6 +33,9 @@ pub mod macos;
 #[cfg(target_os = "linux")]
 pub mod linux;
 
+#[cfg(target_os = "windows")]
+pub mod windows;
+
 #[cfg(target_os = "macos")]
 pub fn platform() -> Box<dyn Control> {
     Box::new(macos::MacControl::new())
@@ -43,12 +46,17 @@ pub fn platform() -> Box<dyn Control> {
     Box::new(linux::LinuxControl::new())
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(target_os = "windows")]
+pub fn platform() -> Box<dyn Control> {
+    Box::new(windows::WindowsControl::new())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 pub fn platform() -> Box<dyn Control> {
     Box::new(unsupported::Unsupported)
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 mod unsupported {
     use super::{Control, FocusProbe};
     use anyhow::Result;
