@@ -27,6 +27,7 @@ dirs.workspace = true
 notify.workspace = true
 blake3.workspace = true
 getrandom.workspace = true
+dotenvy.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

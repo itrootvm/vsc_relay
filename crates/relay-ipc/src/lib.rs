@@ -26,6 +26,30 @@ pub use windows::{
 pub use windows::{connect_async, AsyncConn, AsyncListener};
 
 #[cfg(unix)]
+pub fn acquire_single_instance(_name: &str) -> bool {
+    true
+}
+
+#[cfg(windows)]
+pub fn acquire_single_instance(name: &str) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        let handle = CreateMutexW(std::ptr::null(), 1, wide.as_ptr());
+        if handle.is_null() {
+            return true;
+        }
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            CloseHandle(handle);
+            false
+        } else {
+            true
+        }
+    }
+}
+
+#[cfg(unix)]
 pub fn process_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;

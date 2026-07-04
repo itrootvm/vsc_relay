@@ -95,6 +95,11 @@ async fn main() -> anyhow::Result<()> {
         .with_ansi(false)
         .init();
 
+    if !relay_ipc::acquire_single_instance("vsc-relay-agent") {
+        warn!("another vsc-relay-agent is already running; exiting to avoid a duplicate Telegram poller");
+        return Ok(());
+    }
+
     let mut cfg = Config::from_env();
     if let Some(interval) = args.interval {
         cfg.interval = interval;

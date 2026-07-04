@@ -1,7 +1,25 @@
 use crate::hostname;
+use std::path::PathBuf;
 
 const DEFAULT_INTERVAL_SECS: u64 = 2;
 const DEFAULT_CODEX_MAX_AGE_HOURS: u64 = 24;
+
+pub fn config_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        dirs::config_dir().map(|d| d.join("vsc-relay"))
+    }
+    #[cfg(not(windows))]
+    {
+        dirs::home_dir().map(|d| d.join(".config").join("vsc-relay"))
+    }
+}
+
+fn load_env_file() {
+    if let Some(dir) = config_dir() {
+        let _ = dotenvy::from_path(dir.join("relay.env"));
+    }
+}
 
 pub struct Config {
     pub machine_name: String,
@@ -14,6 +32,7 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Self {
+        load_env_file();
         let machine_name = env_nonempty("RELAY_MACHINE_NAME").unwrap_or_else(hostname::hostname);
         let telegram_token = env_nonempty("TELEGRAM_BOT_TOKEN");
         let pair_secret = env_nonempty("RELAY_PAIR_SECRET");
