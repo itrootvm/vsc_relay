@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-07-05
+
 - Windows 10/11 support alongside macOS and Linux. The daemon, shim, discovery, GUI, and
   Telegram control all run on Windows (x64). A new `relay-ipc` crate carries the IPC transport
   as Windows named pipes (per-user DACL, reject-remote-clients, first-instance guard) on
@@ -21,6 +23,9 @@
   install the shim, and register a logon Scheduled Task in the interactive session. Windows
   self-update swaps the running `.exe` aside to `.old`. `release.yml` builds and publishes it.
 - CI now runs fmt/clippy/test on macOS, Linux, and Windows.
+
+## 0.2.0
+
 - Linux support alongside macOS. The daemon, shim, discovery, and Telegram control all run
   on Linux; the shim background path (send, answer questions, permissions, model/effort/mode)
   is display-independent.
@@ -43,6 +48,15 @@
   single-bot multi-machine hub is on the roadmap.
 - CI builds and publishes the macOS dmg, the Linux tarball, and the `.deb` from a single
   tagged release, after a shared fmt/clippy/test/audit gate.
+
+## 0.1.5
+
+- Bidirectional permission forwarding: permission prompts for every tool (Workflow, Artifact,
+  Skill, Bash, AskUserQuestion, and the rest) now reach Telegram, and answering on one side
+  clears the other. A Telegram answer dismisses the VS Code menu via a control_cancel_request;
+  answering in VS Code voids the Telegram card.
+- Redacted logging on the permission and hook paths that records only the tool and a byte
+  count, never command arguments, file contents, or URLs beyond scheme and host.
 
 ## 0.1.4
 
