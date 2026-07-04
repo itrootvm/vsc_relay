@@ -316,13 +316,12 @@ fn hide_own_console() {}
 async fn untapped_watch(tg: Arc<Telegram>, auth: Arc<auth::Auth>, machine: String) {
     use std::collections::HashSet;
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    let out_dir = home.join(".vsc-relay").join("out");
     let sessions_dir = home.join(".claude").join("sessions");
     let mut warned: HashSet<u32> = HashSet::new();
     let mut prev: HashSet<u32> = HashSet::new();
     loop {
         tokio::time::sleep(Duration::from_secs(45)).await;
-        let tapped = pids_in_dir(&out_dir);
+        let tapped: HashSet<u32> = relay_ipc::live_out_pids().into_iter().collect();
         let live = live_session_pids(&sessions_dir);
         let untapped: HashSet<u32> = live.difference(&tapped).copied().collect();
         let fresh: Vec<u32> = untapped
@@ -353,23 +352,6 @@ async fn untapped_watch(tg: Arc<Telegram>, auth: Arc<auth::Auth>, machine: Strin
         warned.retain(|p| untapped.contains(p));
         prev = untapped;
     }
-}
-
-fn pids_in_dir(dir: &std::path::Path) -> std::collections::HashSet<u32> {
-    let mut set = std::collections::HashSet::new();
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for e in rd.flatten() {
-            if let Some(pid) = e
-                .path()
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .and_then(|s| s.parse::<u32>().ok())
-            {
-                set.insert(pid);
-            }
-        }
-    }
-    set
 }
 
 fn live_session_pids(dir: &std::path::Path) -> std::collections::HashSet<u32> {
