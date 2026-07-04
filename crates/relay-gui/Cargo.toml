@@ -10,12 +10,21 @@ name = "vsc-relay-gui"
 path = "src/main.rs"
 
 [dependencies]
+serde_json.workspace = true
+dirs.workspace = true
+getrandom.workspace = true
+
+[target.'cfg(unix)'.dependencies]
 eframe = { version = "0.28", default-features = false, features = [
     "glow",
     "default_fonts",
     "wayland",
     "x11",
 ] }
-serde_json.workspace = true
-dirs.workspace = true
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+eframe = { version = "0.28", default-features = false, features = [
+    "glow",
+    "default_fonts",
+] }

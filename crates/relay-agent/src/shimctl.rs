@@ -1,5 +1,4 @@
 use anyhow::{bail, Context, Result};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 const MIN_REAL_BYTES: u64 = 50 * 1024 * 1024;
@@ -143,7 +142,7 @@ fn install_one(dir: &Path) -> Result<String> {
 
     let tmp = dir.join(format!("claude.tmp.{}", std::process::id()));
     std::fs::copy(&shim, &tmp).context("copy shim into place")?;
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).context("chmod shim")?;
+    crate::fsutil::set_executable(&tmp).context("chmod shim")?;
     std::fs::rename(&tmp, &claude).context("atomic swap shim")?;
     Ok(format!("installed shim at {}", claude.display()))
 }

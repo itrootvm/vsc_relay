@@ -2,13 +2,12 @@ use crate::auth::Auth;
 use crate::inject;
 use crate::permission::{self, Permissions};
 use crate::telegram::{esc_html, keyboard, Telegram};
+use relay_ipc::Endpoint;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 use tracing::info;
 
@@ -33,42 +32,22 @@ pub fn new() -> Questions {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
-fn out_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(".vsc-relay")
-        .join("out")
-}
-
-fn out_sock(pid: u32) -> PathBuf {
-    out_dir().join(format!("{pid}.sock"))
-}
-
 pub async fn start(q: Questions, perms: Permissions, tg: Arc<Telegram>, auth: Arc<Auth>) {
     let watched: Arc<Mutex<HashSet<u32>>> = Arc::new(Mutex::new(HashSet::new()));
     loop {
-        if let Ok(rd) = std::fs::read_dir(out_dir()) {
-            for e in rd.flatten() {
-                let name = e.file_name();
-                let name = name.to_string_lossy();
-                if let Some(pid) = name
-                    .strip_suffix(".sock")
-                    .and_then(|s| s.parse::<u32>().ok())
-                {
-                    let mut w = watched.lock().await;
-                    if !w.contains(&pid) {
-                        w.insert(pid);
-                        drop(w);
-                        tokio::spawn(reader(
-                            pid,
-                            q.clone(),
-                            perms.clone(),
-                            tg.clone(),
-                            auth.clone(),
-                            watched.clone(),
-                        ));
-                    }
-                }
+        for pid in relay_ipc::live_out_pids() {
+            let mut w = watched.lock().await;
+            if !w.contains(&pid) {
+                w.insert(pid);
+                drop(w);
+                tokio::spawn(reader(
+                    pid,
+                    q.clone(),
+                    perms.clone(),
+                    tg.clone(),
+                    auth.clone(),
+                    watched.clone(),
+                ));
             }
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -83,8 +62,8 @@ async fn reader(
     auth: Arc<Auth>,
     watched: Arc<Mutex<HashSet<u32>>>,
 ) {
-    if let Ok(stream) = UnixStream::connect(out_sock(pid)).await {
-        let mut lines = BufReader::new(stream).lines();
+    if let Ok(conn) = relay_ipc::connect_async(&Endpoint::Out(pid)).await {
+        let mut lines = BufReader::new(conn).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             let v: Value = match serde_json::from_str(&line) {
                 Ok(v) => v,

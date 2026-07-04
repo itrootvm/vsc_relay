@@ -1,12 +1,12 @@
 use crate::auth::Auth;
 use crate::hooks;
 use crate::telegram::{esc_html, keyboard, Telegram};
+use relay_ipc::{AsyncListener, Endpoint};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixListener;
 use tokio::sync::{oneshot, Mutex};
 use tracing::{info, warn};
 
@@ -23,24 +23,19 @@ pub struct IngressCtx {
 }
 
 pub async fn serve(ctx: IngressCtx) {
-    let sock = hooks::socket_path();
-    if let Some(dir) = sock.parent() {
-        crate::fsutil::secure_dir(dir);
-    }
-    let _ = std::fs::remove_file(&sock);
-    let listener = match UnixListener::bind(&sock) {
+    let mut listener = match AsyncListener::bind(&Endpoint::Hook) {
         Ok(l) => l,
         Err(e) => {
             warn!("hook ingress bind failed: {e}");
             return;
         }
     };
-    info!(socket = %sock.display(), "hook ingress listening");
+    info!("hook ingress listening");
     loop {
         match listener.accept().await {
-            Ok((stream, _)) => {
+            Ok(conn) => {
                 let ctx = ctx.clone();
-                tokio::spawn(handle_conn(stream, ctx));
+                tokio::spawn(handle_conn(conn, ctx));
             }
             Err(e) => {
                 warn!("hook accept: {e}");
@@ -54,8 +49,8 @@ async fn recipients(ctx: &IngressCtx) -> Vec<i64> {
     ctx.auth.recipients().await
 }
 
-async fn handle_conn(stream: tokio::net::UnixStream, ctx: IngressCtx) {
-    let (r, mut w) = stream.into_split();
+async fn handle_conn(conn: relay_ipc::AsyncConn, ctx: IngressCtx) {
+    let (r, mut w) = conn.into_split();
     let mut reader = BufReader::new(r);
     let mut line = String::new();
     if reader.read_line(&mut line).await.is_err() {

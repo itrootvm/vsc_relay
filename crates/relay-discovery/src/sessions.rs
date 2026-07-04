@@ -63,23 +63,7 @@ pub fn read_all(sessions_dir: &Path) -> Vec<SessionInfo> {
 }
 
 pub fn pid_alive(pid: u32) -> bool {
-    if pid == 0 {
-        return false;
-    }
-    pid_alive_impl(pid)
-}
-
-#[cfg(unix)]
-fn pid_alive_impl(pid: u32) -> bool {
-    unsafe {
-        let r = libc::kill(pid as libc::pid_t, 0);
-        r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-    }
-}
-
-#[cfg(not(unix))]
-fn pid_alive_impl(_pid: u32) -> bool {
-    false
+    relay_ipc::process_alive(pid)
 }
 
 #[cfg(test)]

@@ -1,17 +1,12 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
+use relay_ipc::{BlockingConn, Endpoint};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 static COUNTER: AtomicU64 = AtomicU64::new(1);
-
-pub fn socket_path() -> PathBuf {
-    let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    base.join(".vsc-relay").join("hook.sock")
-}
 
 pub fn is_hook_command(arg: &str) -> bool {
     arg == "hook"
@@ -24,26 +19,33 @@ pub fn run_hook(args: &[String]) -> Result<()> {
     let payload: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
     let request = json!({ "event": event, "payload": payload });
 
-    let stream = match UnixStream::connect(socket_path()) {
-        Ok(s) => s,
-        Err(_) => {
-            return Ok(());
-        }
+    let mut conn = match relay_ipc::connect_blocking(&Endpoint::Hook) {
+        Ok(c) => c,
+        Err(_) => return Ok(()),
     };
-    let mut writer = stream.try_clone().context("clone hook socket")?;
-    writeln!(writer, "{request}").ok();
-    writer.flush().ok();
+    writeln!(conn, "{request}").ok();
+    conn.flush().ok();
 
     if event == "pre-tool-use" {
-        stream.set_read_timeout(Some(Duration::from_secs(125))).ok();
-        let mut resp = String::new();
-        if BufReader::new(stream).read_line(&mut resp).is_ok() && !resp.trim().is_empty() {
-            if let Ok(dec) = serde_json::from_str::<Value>(&resp) {
-                emit_decision(&dec);
+        if let Some(resp) = read_decision_line(conn, Duration::from_secs(125)) {
+            if !resp.trim().is_empty() {
+                if let Ok(dec) = serde_json::from_str::<Value>(&resp) {
+                    emit_decision(&dec);
+                }
             }
         }
     }
     Ok(())
+}
+
+fn read_decision_line(conn: BlockingConn, timeout: Duration) -> Option<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut resp = String::new();
+        let _ = BufReader::new(conn).read_line(&mut resp);
+        let _ = tx.send(resp);
+    });
+    rx.recv_timeout(timeout).ok()
 }
 
 fn emit_decision(dec: &Value) {

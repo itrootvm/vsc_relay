@@ -1,8 +1,7 @@
+use relay_ipc::{BlockingConn, BlockingListener, Endpoint};
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
@@ -49,7 +48,7 @@ fn emit_cancel(ext_out: &Arc<Mutex<std::io::Stdout>>, request_id: &str) {
 fn real_path() -> PathBuf {
     std::env::current_exe()
         .expect("current_exe")
-        .with_file_name("claude.real")
+        .with_file_name(format!("claude.real{}", std::env::consts::EXE_SUFFIX))
 }
 
 fn session_id(args: &[OsString]) -> Option<String> {
@@ -66,51 +65,106 @@ fn session_id(args: &[OsString]) -> Option<String> {
     None
 }
 
-fn inject_sock_path(pid: u32) -> PathBuf {
-    dirs_home()
-        .join(".vsc-relay")
-        .join("inject")
-        .join(format!("{pid}.sock"))
-}
-
-fn out_sock_path(pid: u32) -> PathBuf {
-    dirs_home()
-        .join(".vsc-relay")
-        .join("out")
-        .join(format!("{pid}.sock"))
-}
-
 fn dirs_home() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
+    dirs::home_dir().unwrap_or_else(std::env::temp_dir)
 }
 
-fn fallback_exec(real: &PathBuf, arg0: &OsString, rest: &[OsString]) -> ! {
+#[cfg(unix)]
+fn spawn_child(
+    real: &Path,
+    arg0: &OsString,
+    rest: &[OsString],
+) -> std::io::Result<std::process::Child> {
+    use std::os::unix::process::CommandExt;
+    Command::new(real)
+        .arg0(arg0)
+        .args(rest)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+}
+
+#[cfg(windows)]
+fn spawn_child(
+    real: &Path,
+    _arg0: &OsString,
+    rest: &[OsString],
+) -> std::io::Result<std::process::Child> {
+    Command::new(real)
+        .args(rest)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+}
+
+#[cfg(unix)]
+fn fallback_exec(real: &Path, arg0: &OsString, rest: &[OsString]) -> ! {
+    use std::os::unix::process::CommandExt;
     run_log("fallback exec (proxy setup failed)");
     let err = Command::new(real).arg0(arg0).args(rest).exec();
     eprintln!("vsc-claude-shim: exec fallback failed: {err}");
     std::process::exit(127);
 }
 
-const LOG_CAP_BYTES: u64 = 5 * 1024 * 1024;
-
-fn ensure_secure_dir(dir: &std::path::Path) {
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-    let _ = std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir);
-    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+#[cfg(windows)]
+fn fallback_exec(real: &Path, _arg0: &OsString, rest: &[OsString]) -> ! {
+    run_log("fallback spawn (proxy setup failed)");
+    let status = Command::new(real)
+        .args(rest)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status();
+    match status {
+        Ok(s) => std::process::exit(s.code().unwrap_or(0)),
+        Err(err) => {
+            eprintln!("vsc-claude-shim: spawn fallback failed: {err}");
+            std::process::exit(127);
+        }
+    }
 }
 
-fn open_capped(path: &std::path::Path) -> Option<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
+#[cfg(unix)]
+fn confine_child(_child: &std::process::Child) {}
+
+#[cfg(windows)]
+fn confine_child(child: &std::process::Child) {
+    use std::os::raw::c_void;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return;
+        }
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        AssignProcessToJobObject(job, child.as_raw_handle() as HANDLE);
+    }
+}
+
+const LOG_CAP_BYTES: u64 = 5 * 1024 * 1024;
+
+fn open_capped(path: &Path) -> Option<std::fs::File> {
     let oversized = std::fs::metadata(path)
         .map(|m| m.len() >= LOG_CAP_BYTES)
         .unwrap_or(false);
     let mut opts = std::fs::OpenOptions::new();
-    opts.create(true).mode(0o600);
+    opts.create(true);
+    set_private_mode(&mut opts);
     if oversized {
         opts.write(true).truncate(true);
     } else {
@@ -118,6 +172,15 @@ fn open_capped(path: &std::path::Path) -> Option<std::fs::File> {
     }
     opts.open(path).ok()
 }
+
+#[cfg(unix)]
+fn set_private_mode(opts: &mut std::fs::OpenOptions) {
+    use std::os::unix::fs::OpenOptionsExt;
+    opts.mode(0o600);
+}
+
+#[cfg(windows)]
+fn set_private_mode(_opts: &mut std::fs::OpenOptions) {}
 
 fn run_log(msg: &str) {
     let base = dirs_home().join(".vsc-relay");
@@ -137,17 +200,12 @@ fn main() {
     let rest: Vec<OsString> = argv.iter().skip(1).cloned().collect();
     let sid = session_id(&rest);
 
-    let mut child = match Command::new(&real)
-        .arg0(&arg0)
-        .args(&rest)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-    {
+    let mut child = match spawn_child(&real, &arg0, &rest) {
         Ok(c) => c,
         Err(_) => fallback_exec(&real, &arg0, &rest),
     };
+
+    confine_child(&child);
 
     let child_pid = child.id();
     run_log(&format!("spawned child pid={child_pid} sid={sid:?}"));
@@ -160,23 +218,16 @@ fn main() {
         None => fallback_exec(&real, &arg0, &rest),
     };
 
-    let readers: Arc<Mutex<Vec<UnixStream>>> = Arc::new(Mutex::new(Vec::new()));
-    {
-        let path = out_sock_path(child_pid);
-        if let Some(dir) = path.parent() {
-            ensure_secure_dir(dir);
-        }
-        let _ = std::fs::remove_file(&path);
-        if let Ok(listener) = UnixListener::bind(&path) {
-            let readers_l = readers.clone();
-            std::thread::spawn(move || {
-                for conn in listener.incoming().flatten() {
-                    if let Ok(mut rs) = readers_l.lock() {
-                        rs.push(conn);
-                    }
+    let readers: Arc<Mutex<Vec<BlockingConn>>> = Arc::new(Mutex::new(Vec::new()));
+    if let Ok(mut listener) = BlockingListener::bind(&Endpoint::Out(child_pid)) {
+        let readers_l = readers.clone();
+        std::thread::spawn(move || {
+            while let Ok(conn) = listener.accept() {
+                if let Ok(mut rs) = readers_l.lock() {
+                    rs.push(conn);
                 }
-            });
-        }
+            }
+        });
     }
     let ext_out: Arc<Mutex<std::io::Stdout>> = Arc::new(Mutex::new(std::io::stdout()));
 
@@ -225,52 +276,45 @@ fn main() {
         }
     });
 
-    {
-        let path = inject_sock_path(child_pid);
-        if let Some(dir) = path.parent() {
-            ensure_secure_dir(dir);
-        }
-        let _ = std::fs::remove_file(&path);
-        if let Ok(listener) = UnixListener::bind(&path) {
-            let tx_inj = tx.clone();
-            let ext_out_inj = ext_out.clone();
-            std::thread::spawn(move || {
-                for conn in listener.incoming().flatten() {
-                    let tx_c = tx_inj.clone();
-                    let eo = ext_out_inj.clone();
-                    std::thread::spawn(move || {
-                        let mut r = BufReader::new(conn);
-                        let mut line = Vec::new();
-                        loop {
-                            line.clear();
-                            match r.read_until(b'\n', &mut line) {
-                                Ok(0) => break,
-                                Ok(_) => {
-                                    let cancel = if is_control_response(&line) {
-                                        response_request_id(&line)
-                                    } else {
-                                        None
-                                    };
-                                    let mut out = line.clone();
-                                    if out.last() != Some(&b'\n') {
-                                        out.push(b'\n');
-                                    }
-                                    if tx_c.send(Msg::Data(out)).is_err() {
-                                        break;
-                                    }
-                                    if let Some(id) = cancel {
-                                        if cancel_enabled() {
-                                            emit_cancel(&eo, &id);
-                                        }
+    if let Ok(mut listener) = BlockingListener::bind(&Endpoint::Inject(child_pid)) {
+        let tx_inj = tx.clone();
+        let ext_out_inj = ext_out.clone();
+        std::thread::spawn(move || {
+            while let Ok(conn) = listener.accept() {
+                let tx_c = tx_inj.clone();
+                let eo = ext_out_inj.clone();
+                std::thread::spawn(move || {
+                    let mut r = BufReader::new(conn);
+                    let mut line = Vec::new();
+                    loop {
+                        line.clear();
+                        match r.read_until(b'\n', &mut line) {
+                            Ok(0) => break,
+                            Ok(_) => {
+                                let cancel = if is_control_response(&line) {
+                                    response_request_id(&line)
+                                } else {
+                                    None
+                                };
+                                let mut out = line.clone();
+                                if out.last() != Some(&b'\n') {
+                                    out.push(b'\n');
+                                }
+                                if tx_c.send(Msg::Data(out)).is_err() {
+                                    break;
+                                }
+                                if let Some(id) = cancel {
+                                    if cancel_enabled() {
+                                        emit_cancel(&eo, &id);
                                     }
                                 }
-                                Err(_) => break,
                             }
+                            Err(_) => break,
                         }
-                    });
-                }
-            });
-        }
+                    }
+                });
+            }
+        });
     }
 
     let tx_host = tx.clone();
@@ -280,8 +324,8 @@ fn main() {
     });
 
     let status = child.wait();
-    let _ = std::fs::remove_file(inject_sock_path(child_pid));
-    let _ = std::fs::remove_file(out_sock_path(child_pid));
+    relay_ipc::cleanup(&Endpoint::Inject(child_pid));
+    relay_ipc::cleanup(&Endpoint::Out(child_pid));
     let code = status.ok().and_then(|s| s.code()).unwrap_or(0);
     run_log(&format!("child pid={child_pid} exited code={code}"));
     std::process::exit(code);
