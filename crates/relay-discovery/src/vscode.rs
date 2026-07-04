@@ -40,11 +40,26 @@ pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
     } else {
         return None;
     };
-    let decoded = percent_decode(&path);
+    let decoded = normalize_drive(percent_decode(&path));
     if decoded.is_empty() {
         return None;
     }
     Some(PathBuf::from(decoded))
+}
+
+#[cfg(windows)]
+fn normalize_drive(p: String) -> String {
+    let b = p.as_bytes();
+    if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+        p[1..].to_string()
+    } else {
+        p
+    }
+}
+
+#[cfg(not(windows))]
+fn normalize_drive(p: String) -> String {
+    p
 }
 
 fn percent_decode(s: &str) -> String {
@@ -93,5 +108,18 @@ mod tests {
         if cfg!(unix) {
             assert_eq!(uri_to_path("file://server/share/project"), None);
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn decodes_windows_drive_uri() {
+        assert_eq!(
+            uri_to_path("file:///c%3A/Users/admin/devs/vsx/vsc_relay"),
+            Some(PathBuf::from(r"c:/Users/admin/devs/vsx/vsc_relay"))
+        );
+        assert_eq!(
+            uri_to_path("file:///d%3A/Games/Zeus%20Poseidon"),
+            Some(PathBuf::from(r"d:/Games/Zeus Poseidon"))
+        );
     }
 }
