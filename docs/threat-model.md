@@ -27,6 +27,21 @@
 - Socket peer credential validation beyond local filesystem isolation.
 - Complete Codex background control.
 
+## Local IPC Isolation (per platform)
+
+The control channels (hook ingress, shim inject, shim stdout tap) are local-only, and no
+platform opens an inbound network port.
+
+- macOS / Linux: Unix domain sockets under `~/.vsc-relay` (dir `0700`, files `0600`), isolated
+  by filesystem permissions.
+- Windows: named pipes `\\.\pipe\vsc-relay-*` created with a protected per-user DACL (owner +
+  SYSTEM only), `PIPE_REJECT_REMOTE_CLIENTS`, and `FILE_FLAG_FIRST_PIPE_INSTANCE` so another
+  process cannot pre-create the name to intercept it; clients open with `SECURITY_IDENTIFICATION`
+  so a malicious server cannot impersonate the caller. Secrets live in
+  `%APPDATA%\vsc-relay\relay.env`, tightened to the current account with `icacls /inheritance:r`.
+  Window focus and GUI fallback require an interactive desktop session (a Session-0 service
+  cannot reach the desktop).
+
 ## Practical Guidance
 
 - Use a strong pairing key.

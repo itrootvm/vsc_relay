@@ -6,6 +6,7 @@
   <img alt="Telegram" src="https://img.shields.io/badge/Telegram-26A5E4?logo=telegram&logoColor=white">
   <img alt="macOS" src="https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white">
   <img alt="Linux" src="https://img.shields.io/badge/Linux-X11-FCC624?logo=linux&logoColor=black">
+  <img alt="Windows" src="https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows&logoColor=white">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-built-B7410E?logo=rust&logoColor=white">
   <img alt="Latest release" src="https://img.shields.io/github/v/release/itrootvm/vsc_relay?sort=semver">
   <img alt="Downloads" src="https://img.shields.io/github/downloads/itrootvm/vsc_relay/total?label=downloads">
@@ -99,6 +100,7 @@ window. Full background control for Codex is not implemented yet.
 | macOS 14+ | `VSCRelay.app` or terminal | Yes | Yes, via Accessibility |
 | Linux (X11) | `.deb`, tarball, or `vsc-relay-gui`/systemd | Yes | Yes, via `xdotool` |
 | Linux (Wayland) | `.deb`, tarball, or `vsc-relay-gui`/systemd | Yes | Limited (compositor blocks key injection) |
+| Windows 10/11 | `.zip` + `install.ps1`, or `vsc-relay-gui.exe` | Yes, via named pipes | Yes, via Win32 (interactive session) |
 
 The background shim path — sending prompts, answering questions, permission Allow/Deny, and
 model/effort/mode — is the primary control channel and needs no display. Window focus and
@@ -211,9 +213,34 @@ Today each machine runs its own bot: give every machine its own token (name them
 `RELAY_MACHINE_NAME`) and talk to each through its own bot. A single-bot hub that controls
 all machines from one chat is on the roadmap.
 
+## Install (Windows)
+
+Windows 10 or 11 (x64). Download `vsc-relay-<version>-windows-x86_64.zip` from
+[Releases](https://github.com/itrootvm/vsc_relay/releases/latest), extract it, and run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+It installs `vsc-relay-agent.exe`, `vsc-claude-shim.exe`, and `vsc-relay-gui.exe` to
+`%LOCALAPPDATA%\Programs\vsc-relay`, wires the Claude Code hooks, installs the shim, and
+registers a logon task that runs the relay in your interactive session. Then:
+
+1. Edit `%APPDATA%\vsc-relay\relay.env` and set `TELEGRAM_BOT_TOKEN` and `RELAY_PAIR_SECRET`.
+2. Launch **VS Code Agent Relay** (`vsc-relay-gui.exe`), or start the agent directly:
+   `%LOCALAPPDATA%\Programs\vsc-relay\vsc-relay-agent.exe`.
+3. In Telegram, send `/auth <key>` to your bot, then `/menu`.
+
+The background shim path — send prompts, answer questions, permission Allow/Deny, and
+model/effort/mode — runs over local Windows named pipes and needs no display. Window focus and
+GUI fallback need an interactive desktop session (the logon task runs there; a Session-0
+service cannot focus windows). Secrets live in `%APPDATA%\vsc-relay\relay.env`, tightened to
+your account with `icacls`. Update in place with `vsc-relay-agent.exe self-update`. From a
+source checkout the terminal path is `.\svc.ps1 start` and `.\shim.ps1 install`.
+
 ## Build From Source
 
-Requirements (both platforms): Rust stable, the Claude Code VS Code extension for full
+Requirements (all platforms): Rust stable, the Claude Code VS Code extension for full
 functionality, and a Telegram bot token from BotFather. On macOS also install the Xcode
 command line tools; on Linux install `musl-tools` for a portable static build and
 `xdotool xclip xdg-utils` for GUI fallback.
@@ -314,7 +341,6 @@ pairing key and review your blocked-command list.
 - More robust callback payloads for workspaces with unusual names.
 - Native Wayland input support for the GUI fallback (the shim path already works on Wayland).
 - A Linux tray/GUI companion to match the macOS app.
-- Windows support (the core, transport, adapters, and shim are already portable).
 - Multiple machines reporting to one Telegram bot.
 
 ## Repository Layout
