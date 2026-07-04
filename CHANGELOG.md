@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Windows 10/11 support alongside macOS and Linux. The daemon, shim, discovery, GUI, and
+  Telegram control all run on Windows (x64). A new `relay-ipc` crate carries the IPC transport
+  as Windows named pipes (per-user DACL, reject-remote-clients, first-instance guard) on
+  Windows and Unix domain sockets on macOS/Linux, so the background shim path (send, answer
+  questions, permissions, model/effort/mode) stays display-independent.
+- New `relay-control` Windows backend for window focus and GUI fallback via Win32
+  (`EnumWindows` / `SetForegroundWindow` + `AttachThreadInput` / `SendInput` / clipboard /
+  `ShellExecuteW`); needs an interactive desktop session.
+- Windows shim wraps `claude.exe` (moved aside to `claude.real.exe`), spawns the real helper
+  via CreateProcess with a spawn-and-wait fail-safe (no `exec`), and confines it to a Job
+  Object so a killed shim cannot orphan the child.
+- The agent loads `relay.env` from the platform config dir (`%APPDATA%\vsc-relay` on Windows,
+  `~/.config/vsc-relay` on Unix) via dotenvy, and prevents a duplicate Telegram poller with a
+  single-instance named mutex on Windows.
+- Windows packaging: `build_windows.ps1` produces `dist/vsc-relay-<ver>-windows-x86_64.zip`
+  with per-user (no-admin) `install.ps1` / `uninstall.ps1` that wire the Claude Code hooks,
+  install the shim, and register a logon Scheduled Task in the interactive session. Windows
+  self-update swaps the running `.exe` aside to `.old`. `release.yml` builds and publishes it.
+- CI now runs fmt/clippy/test on macOS, Linux, and Windows.
 - Linux support alongside macOS. The daemon, shim, discovery, and Telegram control all run
   on Linux; the shim background path (send, answer questions, permissions, model/effort/mode)
   is display-independent.
