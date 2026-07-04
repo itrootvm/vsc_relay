@@ -177,11 +177,7 @@ impl RelayApp {
         let bin = self.agent_bin.clone();
         let tx = self.update_tx.clone();
         std::thread::spawn(move || {
-            let ev = match hidden_cmd(&bin)
-                .arg("self-update")
-                .arg("--check")
-                .output()
-            {
+            let ev = match hidden_cmd(&bin).arg("self-update").arg("--check").output() {
                 Ok(o) => {
                     let out = String::from_utf8_lossy(&o.stdout);
                     if out.contains("update=true") {

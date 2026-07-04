@@ -293,6 +293,26 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn hide_own_console() {
+    use windows_sys::Win32::System::Console::{GetConsoleProcessList, GetConsoleWindow};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+    unsafe {
+        let hwnd = GetConsoleWindow();
+        if hwnd.is_null() {
+            return;
+        }
+        let mut pids = [0u32; 4];
+        let count = GetConsoleProcessList(pids.as_mut_ptr(), pids.len() as u32);
+        if count == 1 {
+            ShowWindow(hwnd, SW_HIDE);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn hide_own_console() {}
+
 async fn untapped_watch(tg: Arc<Telegram>, auth: Arc<auth::Auth>, machine: String) {
     use std::collections::HashSet;
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
