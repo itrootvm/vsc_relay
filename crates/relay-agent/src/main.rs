@@ -99,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
         warn!("another vsc-relay-agent is already running; exiting to avoid a duplicate Telegram poller");
         return Ok(());
     }
+    self_update::sweep_old();
 
     let mut cfg = Config::from_env();
     if let Some(interval) = args.interval {

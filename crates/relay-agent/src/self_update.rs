@@ -1,6 +1,5 @@
 use anyhow::{bail, Context, Result};
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
 
 const REPO: &str = "itrootvm/vsc_relay";
@@ -36,12 +35,16 @@ pub async fn run(args: &[String]) -> Result<()> {
     }
 
     let arch = std::env::consts::ARCH;
-    let tag = format!("linux-{arch}");
+    #[cfg(windows)]
+    let (os_tag, ext) = ("windows", ".zip");
+    #[cfg(not(windows))]
+    let (os_tag, ext) = ("linux", ".tar.gz");
+    let tag = format!("{os_tag}-{arch}");
     let asset = release
         .assets
         .iter()
-        .find(|a| a.name.contains(&tag) && a.name.ends_with(".tar.gz"))
-        .with_context(|| format!("no {tag} tarball in release {}", release.tag))?;
+        .find(|a| a.name.contains(&tag) && a.name.ends_with(ext))
+        .with_context(|| format!("no {tag} archive in release {}", release.tag))?;
     let sum = release
         .assets
         .iter()
@@ -67,7 +70,7 @@ pub async fn run(args: &[String]) -> Result<()> {
 
     extract(&tarball, &work)?;
     let staged_bin = work
-        .join(format!("vsc-relay-{latest}-linux-{arch}"))
+        .join(format!("vsc-relay-{latest}-{os_tag}-{arch}"))
         .join("bin");
     let dest = std::env::current_exe()
         .context("current exe")?
@@ -76,11 +79,12 @@ pub async fn run(args: &[String]) -> Result<()> {
         .to_path_buf();
 
     let mut replaced = Vec::new();
-    for name in BINARIES {
-        let src = staged_bin.join(name);
+    for base in BINARIES {
+        let name = format!("{base}{}", std::env::consts::EXE_SUFFIX);
+        let src = staged_bin.join(&name);
         if src.exists() {
-            install_atomic(&src, &dest.join(name)).with_context(|| format!("install {name}"))?;
-            replaced.push(*name);
+            install_atomic(&src, &dest.join(&name)).with_context(|| format!("install {name}"))?;
+            replaced.push(name);
         }
     }
     if replaced.is_empty() {
@@ -175,28 +179,27 @@ fn verify_sha256(file: &Path, sums: &str, asset_name: &str) -> Result<()> {
             }
         })
         .context("asset not found in checksum file")?;
-    let out = Command::new("sha256sum")
-        .arg(file)
-        .output()
-        .context("run sha256sum")?;
-    if !out.status.success() {
-        bail!("sha256sum failed");
-    }
-    let got = String::from_utf8_lossy(&out.stdout)
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let got = file_sha256(file)?;
     if got != expected {
         bail!("checksum mismatch (expected {expected}, got {got})");
     }
     Ok(())
 }
 
-fn extract(tarball: &Path, into: &Path) -> Result<()> {
+fn file_sha256(path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = std::fs::File::open(path).context("open for hashing")?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).context("hash file")?;
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[cfg(not(windows))]
+fn extract(archive: &Path, into: &Path) -> Result<()> {
+    use std::process::Command;
     let status = Command::new("tar")
         .arg("-xzf")
-        .arg(tarball)
+        .arg(archive)
         .arg("-C")
         .arg(into)
         .status()
@@ -207,6 +210,15 @@ fn extract(tarball: &Path, into: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn extract(archive: &Path, into: &Path) -> Result<()> {
+    let file = std::fs::File::open(archive).context("open archive")?;
+    let mut zip = zip::ZipArchive::new(file).context("read zip")?;
+    zip.extract(into).context("extract zip")?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
 fn install_atomic(src: &Path, dest: &Path) -> Result<()> {
     let dir = dest.parent().context("dest dir")?;
     let file_name = dest.file_name().context("dest name")?.to_string_lossy();
@@ -216,3 +228,40 @@ fn install_atomic(src: &Path, dest: &Path) -> Result<()> {
     std::fs::rename(&tmp, dest).context("atomic rename")?;
     Ok(())
 }
+
+#[cfg(windows)]
+fn install_atomic(src: &Path, dest: &Path) -> Result<()> {
+    let dir = dest.parent().context("dest dir")?;
+    let file_name = dest.file_name().context("dest name")?.to_string_lossy();
+    let tmp = dir.join(format!(".{file_name}.new"));
+    std::fs::copy(src, &tmp).context("stage new binary")?;
+    if dest.exists() {
+        let old = dir.join(format!("{file_name}.old"));
+        let _ = std::fs::remove_file(&old);
+        std::fs::rename(dest, &old).context("move running exe aside")?;
+    }
+    std::fs::rename(&tmp, dest).context("install new binary")?;
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn sweep_old() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(dir) = exe.parent() else {
+        return;
+    };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|s| s.to_str()) == Some("old") {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn sweep_old() {}

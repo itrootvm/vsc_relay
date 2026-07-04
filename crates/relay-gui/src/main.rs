@@ -1087,7 +1087,18 @@ fn set_mode(path: &PathBuf, mode: u32) {
 }
 
 #[cfg(windows)]
-fn set_mode(_path: &PathBuf, _mode: u32) {}
+fn set_mode(path: &PathBuf, _mode: u32) {
+    let user = std::env::var("USERNAME").unwrap_or_default();
+    if user.is_empty() {
+        return;
+    }
+    let _ = Command::new("icacls")
+        .arg(path)
+        .args(["/inheritance:r", "/grant:r", &format!("{user}:F")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
 
 #[cfg(not(windows))]
 fn open_url(url: &str) {
