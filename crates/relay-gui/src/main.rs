@@ -28,6 +28,17 @@ enum UpdateEvent {
     Done(bool, String),
 }
 
+fn hidden_cmd<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
+    #[allow(unused_mut)]
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    cmd
+}
+
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -166,7 +177,7 @@ impl RelayApp {
         let bin = self.agent_bin.clone();
         let tx = self.update_tx.clone();
         std::thread::spawn(move || {
-            let ev = match Command::new(&bin)
+            let ev = match hidden_cmd(&bin)
                 .arg("self-update")
                 .arg("--check")
                 .output()
@@ -200,7 +211,7 @@ impl RelayApp {
         let tx = self.update_tx.clone();
         let logtx = self.log_tx.clone();
         std::thread::spawn(move || {
-            let (ok, msg) = match Command::new(&bin).arg("self-update").output() {
+            let (ok, msg) = match hidden_cmd(&bin).arg("self-update").output() {
                 Ok(o) => {
                     for l in String::from_utf8_lossy(&o.stdout).lines() {
                         let _ = logtx.send(l.to_string());
@@ -228,7 +239,7 @@ impl RelayApp {
     fn relaunch(&mut self) {
         self.stop();
         if let Ok(exe) = std::env::current_exe() {
-            let _ = Command::new(exe).stdin(Stdio::null()).spawn();
+            let _ = hidden_cmd(exe).stdin(Stdio::null()).spawn();
         }
         std::process::exit(0);
     }
@@ -253,7 +264,7 @@ impl RelayApp {
 
     #[cfg(windows)]
     fn is_autostart_enabled(&self) -> bool {
-        Command::new("reg")
+        hidden_cmd("reg")
             .args([
                 "query",
                 r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
@@ -268,7 +279,7 @@ impl RelayApp {
     }
 
     fn refresh_env(&mut self) {
-        let Ok(out) = Command::new(&self.agent_bin).arg("env-check").output() else {
+        let Ok(out) = hidden_cmd(&self.agent_bin).arg("env-check").output() else {
             return;
         };
         for line in String::from_utf8_lossy(&out.stdout).lines() {
@@ -336,7 +347,7 @@ impl RelayApp {
         }
         self.save_env();
         kill_stray_daemons();
-        let _ = Command::new(&self.agent_bin)
+        let _ = hidden_cmd(&self.agent_bin)
             .arg("install-hooks")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -345,7 +356,7 @@ impl RelayApp {
         set_mode(&self.relay_dir, 0o700);
         self.rotate_log();
 
-        let mut cmd = Command::new(&self.agent_bin);
+        let mut cmd = hidden_cmd(&self.agent_bin);
         for (k, v) in &self.env_map {
             cmd.env(k, v);
         }
@@ -398,7 +409,7 @@ impl RelayApp {
     }
 
     fn run_agent_note(&mut self, args: &[&str]) {
-        match Command::new(&self.agent_bin).args(args).output() {
+        match hidden_cmd(&self.agent_bin).args(args).output() {
             Ok(o) => {
                 let out = String::from_utf8_lossy(&o.stdout);
                 for line in out.lines() {
@@ -440,7 +451,7 @@ impl RelayApp {
             let exe = std::env::current_exe()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| "vsc-relay-gui.exe".to_string());
-            let _ = Command::new("reg")
+            let _ = hidden_cmd("reg")
                 .args([
                     "add", key, "/v", "VSCRelay", "/t", "REG_SZ", "/d", &exe, "/f",
                 ])
@@ -448,7 +459,7 @@ impl RelayApp {
                 .stderr(Stdio::null())
                 .status();
         } else {
-            let _ = Command::new("reg")
+            let _ = hidden_cmd("reg")
                 .args(["delete", key, "/v", "VSCRelay", "/f"])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -1023,7 +1034,7 @@ fn pump(stream: impl Read, tx: Sender<String>, log_path: PathBuf) {
 
 #[cfg(windows)]
 fn kill_stray_daemons() {
-    let _ = Command::new("taskkill")
+    let _ = hidden_cmd("taskkill")
         .args(["/IM", "vsc-relay-agent.exe", "/F"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -1092,7 +1103,7 @@ fn set_mode(path: &PathBuf, _mode: u32) {
     if user.is_empty() {
         return;
     }
-    let _ = Command::new("icacls")
+    let _ = hidden_cmd("icacls")
         .arg(path)
         .args(["/inheritance:r", "/grant:r", &format!("{user}:F")])
         .stdout(Stdio::null())
@@ -1102,7 +1113,7 @@ fn set_mode(path: &PathBuf, _mode: u32) {
 
 #[cfg(not(windows))]
 fn open_url(url: &str) {
-    let _ = Command::new("xdg-open")
+    let _ = hidden_cmd("xdg-open")
         .arg(url)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -1111,7 +1122,7 @@ fn open_url(url: &str) {
 
 #[cfg(windows)]
 fn open_url(url: &str) {
-    let _ = Command::new("cmd")
+    let _ = hidden_cmd("cmd")
         .args(["/C", "start", "", url])
         .stdout(Stdio::null())
         .stderr(Stdio::null())

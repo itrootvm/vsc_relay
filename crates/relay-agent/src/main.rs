@@ -86,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let args = parse_daemon_args(&raw)?;
+    hide_own_console();
 
     tracing_subscriber::fmt()
         .with_env_filter(
