@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 enum Msg {
     Data(Vec<u8>),
@@ -221,11 +222,16 @@ fn main() {
     let readers: Arc<Mutex<Vec<BlockingConn>>> = Arc::new(Mutex::new(Vec::new()));
     if let Ok(mut listener) = BlockingListener::bind(&Endpoint::Out(child_pid)) {
         let readers_l = readers.clone();
-        std::thread::spawn(move || {
-            while let Ok(conn) = listener.accept() {
-                if let Ok(mut rs) = readers_l.lock() {
-                    rs.push(conn);
+        std::thread::spawn(move || loop {
+            let conn = match listener.accept() {
+                Ok(conn) => conn,
+                Err(_) => {
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
                 }
+            };
+            if let Ok(mut rs) = readers_l.lock() {
+                rs.push(conn);
             }
         });
     }
@@ -279,41 +285,46 @@ fn main() {
     if let Ok(mut listener) = BlockingListener::bind(&Endpoint::Inject(child_pid)) {
         let tx_inj = tx.clone();
         let ext_out_inj = ext_out.clone();
-        std::thread::spawn(move || {
-            while let Ok(conn) = listener.accept() {
-                let tx_c = tx_inj.clone();
-                let eo = ext_out_inj.clone();
-                std::thread::spawn(move || {
-                    let mut r = BufReader::new(conn);
-                    let mut line = Vec::new();
-                    loop {
-                        line.clear();
-                        match r.read_until(b'\n', &mut line) {
-                            Ok(0) => break,
-                            Ok(_) => {
-                                let cancel = if is_control_response(&line) {
-                                    response_request_id(&line)
-                                } else {
-                                    None
-                                };
-                                let mut out = line.clone();
-                                if out.last() != Some(&b'\n') {
-                                    out.push(b'\n');
-                                }
-                                if tx_c.send(Msg::Data(out)).is_err() {
-                                    break;
-                                }
-                                if let Some(id) = cancel {
-                                    if cancel_enabled() {
-                                        emit_cancel(&eo, &id);
-                                    }
+        std::thread::spawn(move || loop {
+            let conn = match listener.accept() {
+                Ok(conn) => conn,
+                Err(_) => {
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
+            };
+            let tx_c = tx_inj.clone();
+            let eo = ext_out_inj.clone();
+            std::thread::spawn(move || {
+                let mut r = BufReader::new(conn);
+                let mut line = Vec::new();
+                loop {
+                    line.clear();
+                    match r.read_until(b'\n', &mut line) {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            let cancel = if is_control_response(&line) {
+                                response_request_id(&line)
+                            } else {
+                                None
+                            };
+                            let mut out = line.clone();
+                            if out.last() != Some(&b'\n') {
+                                out.push(b'\n');
+                            }
+                            if tx_c.send(Msg::Data(out)).is_err() {
+                                break;
+                            }
+                            if let Some(id) = cancel {
+                                if cancel_enabled() {
+                                    emit_cancel(&eo, &id);
                                 }
                             }
-                            Err(_) => break,
                         }
+                        Err(_) => break,
                     }
-                });
-            }
+                }
+            });
         });
     }
 

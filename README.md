@@ -21,9 +21,9 @@ follow-up prompt. It watches your local VS Code agent sessions and gives you a T
 control panel for reading status, replying, approving or denying prompts, and sending the
 next instruction.
 
-It is not a cloud service. It runs on your Mac or Linux machine, talks to Telegram by
-outbound HTTPS, and uses local files and Unix sockets to observe and control local agent
-sessions.
+It is not a cloud service. It runs on your Mac, Linux, or Windows machine, talks to Telegram
+by outbound HTTPS, and uses local files and local IPC (Unix domain sockets on macOS and
+Linux, named pipes on Windows) to observe and control local agent sessions.
 
 ![VSC Relay macOS app](docs/screenshot.png)
 
@@ -37,8 +37,8 @@ Claude Code is useful for long tasks, but it often needs a human at exactly the 
 - the task finishes and needs the next instruction;
 - several VS Code windows are running and you need to know which one is blocked.
 
-VSC Relay turns that into a Telegram workflow. Start the task on your Mac or Linux box,
-leave it running, and handle the next decision from your phone.
+VSC Relay turns that into a Telegram workflow. Start the task on your Mac, Linux, or Windows
+box, leave it running, and handle the next decision from your phone.
 
 ## What You Get
 
@@ -51,8 +51,8 @@ leave it running, and handle the next decision from your phone.
   `git push --force`, and patterns you add yourself.
 - Claude Code controls for model, reasoning effort, and permission mode.
 - Window focus and GUI fallback controls for cases where background control is unavailable.
-- A small macOS app with token setup, pairing key setup, live log, service controls, and
-  shim install or removal.
+- A desktop setup app (token, pairing key, live log, service controls, shim install/removal):
+  the macOS `VSCRelay.app` plus the `vsc-relay-gui` companion on Linux and Windows.
 
 ## How The Pieces Fit
 
@@ -61,7 +61,7 @@ Claude Code in VS Code
         |
         | transcript files, hooks, optional shim
         v
-vsc-relay-agent on your Mac or Linux box
+vsc-relay-agent on your Mac, Linux, or Windows box
         |
         | Telegram Bot API, outbound HTTPS
         v
@@ -80,7 +80,7 @@ The project is made of three local parts:
 Reading session state does not use screen scraping. The relay reads the files Claude Code,
 Codex, and VS Code already write locally. Elevated desktop access is only needed for window
 focus and GUI fallback actions: macOS Accessibility, or an X11 (or XWayland) session with
-`xdotool` on Linux.
+`xdotool` on Linux, or an interactive desktop session on Windows.
 
 ## Support Matrix
 
@@ -104,7 +104,8 @@ window. Full background control for Codex is not implemented yet.
 
 The background shim path — sending prompts, answering questions, permission Allow/Deny, and
 model/effort/mode — is the primary control channel and needs no display. Window focus and
-GUI fallback (Codex, un-shimmed sessions) need macOS Accessibility or Linux X11 + `xdotool`.
+GUI fallback (Codex, un-shimmed sessions) need macOS Accessibility, Linux X11 + `xdotool`, or
+Windows Win32 in an interactive desktop session.
 Linux binaries are static (musl), so one build runs across distributions.
 
 ## Telegram Commands
@@ -257,6 +258,12 @@ Build the Linux release tarball (daemon, shim, and GUI):
 ./build_linux.sh
 ```
 
+Build the Windows release zip (daemon, shim, and GUI):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build_windows.ps1
+```
+
 `cargo build --release` builds the daemon and shim (headless, no desktop libs needed). The
 GUI is excluded from the default build; build it explicitly with
 `cargo build --release -p relay-gui` (needs the desktop dev libs listed above).
@@ -314,9 +321,12 @@ When the Claude Code extension updates, new chats may need the shim installed ag
   added through `TELEGRAM_ALLOWED_CHATS`.
 - The relay does not open an inbound network port. Telegram communication is outbound
   HTTPS long polling.
-- Runtime sockets are local Unix sockets under your user account.
+- Runtime IPC is local only: Unix domain sockets (0600) under your account on macOS and
+  Linux, and per-user-DACL named pipes (PIPE_REJECT_REMOTE_CLIENTS) on Windows. No inbound
+  network port is opened.
 - The app stores secrets in Keychain. The terminal mode reads them from `.env`; keep that
-  file private and out of version control.
+  file private and out of version control. On Windows, secrets live in
+  `%APPDATA%\vsc-relay\relay.env`, tightened to your account with `icacls`.
 - Dangerous command patterns are checked before execution through Claude Code hooks.
 
 This tool can type into your local agents and approve or deny their actions. Use a strong
@@ -340,7 +350,6 @@ pairing key and review your blocked-command list.
 - More complete Codex background control.
 - More robust callback payloads for workspaces with unusual names.
 - Native Wayland input support for the GUI fallback (the shim path already works on Wayland).
-- A Linux tray/GUI companion to match the macOS app.
 - Multiple machines reporting to one Telegram bot.
 
 ## Repository Layout
@@ -348,18 +357,23 @@ pairing key and review your blocked-command list.
 ```text
 crates/
   relay-core        shared types and state reduction
+  relay-ipc         local IPC transport (Unix domain sockets on macOS and Linux, named pipes on Windows)
   relay-discovery   VS Code, Claude Code, Codex, and git discovery
   relay-adapters    transcript readers for Claude Code and Codex
-  relay-control     window focus and GUI fallback actions (macOS + Linux backends)
+  relay-control     window focus and GUI fallback actions (macOS, Linux, and Windows backends)
   relay-agent       daemon, Telegram bot, hooks, auth, ingress, control
   relay-shim        Claude Code helper wrapper
-  relay-gui         Linux desktop app (egui), any desktop environment
+  relay-gui         Linux and Windows desktop app (egui), any desktop environment
 macapp/             SwiftUI macOS app
 packaging/linux/    systemd user service, desktop launcher, install/uninstall scripts
+packaging/windows/  install/uninstall PowerShell scripts and relay.env.example
 build_app.sh        macOS app bundle and disk image builder
 build_linux.sh      Linux static tarball builder (daemon + shim + gui)
+build_windows.ps1   Windows release zip builder (daemon + shim + gui)
 svc.sh              terminal service helper
+svc.ps1             terminal service helper (Windows)
 shim.sh             terminal shim helper
+shim.ps1            terminal shim helper (Windows)
 ```
 
 ## Development
