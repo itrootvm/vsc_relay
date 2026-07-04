@@ -118,8 +118,35 @@ jobs:
             dist/*.deb.sha256
           if-no-files-found: error
 
+  build-windows:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build windows zip
+        shell: pwsh
+        run: |
+          $env:APP_VERSION = "${{ github.ref_name }}".TrimStart('v')
+          ./build_windows.ps1
+
+      - name: Upload windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+          if-no-files-found: error
+
   release:
-    needs: [build-macos, build-linux]
+    needs: [build-macos, build-linux, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -135,6 +162,7 @@ jobs:
           cp artifacts/macos-dmg/VSCRelay.dmg build/
           cp artifacts/linux-tarball/*.tar.gz build/
           cp artifacts/linux-tarball/*.deb build/
+          cp artifacts/windows-zip/*.zip build/
 
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@v0
@@ -147,7 +175,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd build
-          sha256sum VSCRelay.dmg *.tar.gz *.deb VSCRelay.spdx.json > SHA256SUMS
+          sha256sum VSCRelay.dmg *.tar.gz *.deb *.zip VSCRelay.spdx.json > SHA256SUMS
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v4
@@ -156,6 +184,7 @@ jobs:
             build/VSCRelay.dmg
             build/*.tar.gz
             build/*.deb
+            build/*.zip
 
       - name: Publish release
         uses: softprops/action-gh-release@v3
@@ -165,6 +194,7 @@ jobs:
             build/VSCRelay.dmg
             build/*.tar.gz
             build/*.deb
+            build/*.zip
             build/SHA256SUMS
             build/VSCRelay.spdx.json
           generate_release_notes: true
