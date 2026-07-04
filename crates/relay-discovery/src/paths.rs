@@ -78,13 +78,41 @@ const VSCODE_APP_DIRS: &[&str] = &[
 ];
 
 pub fn encode_cwd(cwd: &std::path::Path) -> String {
-    cwd.to_string_lossy()
-        .chars()
+    encode_str(&cwd.to_string_lossy())
+}
+
+#[cfg(not(windows))]
+fn encode_str(raw: &str) -> String {
+    raw.chars()
         .map(|c| match c {
             '/' | '.' | '_' => '-',
             other => other,
         })
         .collect()
+}
+
+#[cfg(windows)]
+fn encode_str(raw: &str) -> String {
+    lowercase_drive(raw)
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '.' | '_' => '-',
+            other => other,
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn lowercase_drive(s: &str) -> String {
+    let b = s.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        let mut out = String::with_capacity(s.len());
+        out.push((b[0] as char).to_ascii_lowercase());
+        out.push_str(&s[1..]);
+        out
+    } else {
+        s.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -97,6 +125,19 @@ mod tests {
         assert_eq!(
             encode_cwd(Path::new("/Users/itodev/devs/vsc_parser")),
             "-Users-itodev-devs-vsc-parser"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn encodes_windows_cwd_like_claude() {
+        assert_eq!(
+            encode_cwd(Path::new(r"c:\Users\admin\devs\vsx\vsc_relay")),
+            "c--Users-admin-devs-vsx-vsc-relay"
+        );
+        assert_eq!(
+            encode_cwd(Path::new(r"C:\Users\admin\devs\vsx\vsc_relay")),
+            "c--Users-admin-devs-vsx-vsc-relay"
         );
     }
 }

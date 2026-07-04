@@ -3,6 +3,18 @@ use std::path::{Path, PathBuf};
 
 const MIN_REAL_BYTES: u64 = 50 * 1024 * 1024;
 
+fn claude_name() -> String {
+    format!("claude{}", std::env::consts::EXE_SUFFIX)
+}
+
+fn claude_real_name() -> String {
+    format!("claude.real{}", std::env::consts::EXE_SUFFIX)
+}
+
+fn shim_name() -> String {
+    format!("vsc-claude-shim{}", std::env::consts::EXE_SUFFIX)
+}
+
 pub struct EnvStatus {
     pub vscode: bool,
     pub extension: bool,
@@ -79,7 +91,28 @@ fn vscode_present() -> bool {
     if EDITOR_BINS.iter().any(|b| which(b)) {
         return true;
     }
-    let mut fixed: Vec<PathBuf> = [
+    fixed_editor_paths().iter().any(|p| p.exists())
+}
+
+#[cfg(windows)]
+fn fixed_editor_paths() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(local) = dirs::data_local_dir() {
+        out.push(local.join(r"Programs\Microsoft VS Code\Code.exe"));
+        out.push(local.join(r"Programs\Microsoft VS Code Insiders\Code - Insiders.exe"));
+        out.push(local.join(r"Programs\cursor\Cursor.exe"));
+    }
+    for var in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(pf) = std::env::var_os(var) {
+            out.push(PathBuf::from(pf).join(r"Microsoft VS Code\Code.exe"));
+        }
+    }
+    out
+}
+
+#[cfg(not(windows))]
+fn fixed_editor_paths() -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = [
         "/usr/share/code",
         "/usr/bin/code",
         "/opt/visual-studio-code",
@@ -90,18 +123,40 @@ fn vscode_present() -> bool {
     .map(PathBuf::from)
     .collect();
     if let Some(home) = dirs::home_dir() {
-        fixed.push(home.join(".local/share/flatpak/app/com.visualstudio.code"));
+        out.push(home.join(".local/share/flatpak/app/com.visualstudio.code"));
     }
-    fixed.iter().any(|p| p.exists())
+    out
 }
 
 fn which(bin: &str) -> bool {
-    std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("command -v {bin} >/dev/null 2>&1"))
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    for dir in std::env::split_paths(&paths) {
+        for ext in path_exts() {
+            if dir.join(format!("{bin}{ext}")).is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(windows)]
+fn path_exts() -> Vec<String> {
+    let raw = std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".to_string());
+    let mut v: Vec<String> = raw
+        .split(';')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    v.push(String::new());
+    v
+}
+
+#[cfg(not(windows))]
+fn path_exts() -> Vec<String> {
+    vec![String::new()]
 }
 
 fn ext_roots() -> Vec<PathBuf> {
@@ -124,8 +179,8 @@ fn ext_roots() -> Vec<PathBuf> {
 }
 
 fn install_one(dir: &Path) -> Result<String> {
-    let claude = dir.join("claude");
-    let real = dir.join("claude.real");
+    let claude = dir.join(claude_name());
+    let real = dir.join(claude_real_name());
     let shim = shim_binary()?;
 
     if !real.exists() {
@@ -200,7 +255,7 @@ fn ext_native_dir() -> Result<PathBuf> {
             let name = entry.file_name().to_string_lossy().to_string();
             if let Some(ver) = name.strip_prefix("anthropic.claude-code-") {
                 let dir = entry.path().join("resources").join("native-binary");
-                if dir.join("claude").exists() || dir.join("claude.real").exists() {
+                if dir.join(claude_name()).exists() || dir.join(claude_real_name()).exists() {
                     let sv = parse_semver(ver);
                     let take = match &best {
                         Some((v, _)) => sv > *v,
@@ -225,7 +280,7 @@ fn ext_native_dirs() -> Vec<PathBuf> {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name.starts_with("anthropic.claude-code-") {
                     let dir = entry.path().join("resources").join("native-binary");
-                    if dir.join("claude").exists() || dir.join("claude.real").exists() {
+                    if dir.join(claude_name()).exists() || dir.join(claude_real_name()).exists() {
                         out.push(dir);
                     }
                 }
@@ -238,7 +293,7 @@ fn ext_native_dirs() -> Vec<PathBuf> {
 fn shim_binary() -> Result<PathBuf> {
     let path = std::env::current_exe()
         .context("current_exe")?
-        .with_file_name("vsc-claude-shim");
+        .with_file_name(shim_name());
     if !path.exists() {
         bail!(
             "bundled shim binary not found next to the app: {}",
@@ -262,8 +317,8 @@ fn uninstall() -> Result<()> {
     }
     let mut restored = 0;
     for dir in &dirs {
-        let claude = dir.join("claude");
-        let real = dir.join("claude.real");
+        let claude = dir.join(claude_name());
+        let real = dir.join(claude_real_name());
         if real.exists() {
             std::fs::rename(&real, &claude)
                 .with_context(|| format!("restore real binary at {}", claude.display()))?;
@@ -284,8 +339,8 @@ fn status() -> Result<()> {
     }
     for dir in &dirs {
         println!("dir: {}", dir.display());
-        for name in ["claude", "claude.real"] {
-            let p = dir.join(name);
+        for name in [claude_name(), claude_real_name()] {
+            let p = dir.join(&name);
             match std::fs::metadata(&p) {
                 Ok(m) => println!("  {name}: {} bytes", m.len()),
                 Err(_) => println!("  {name}: absent"),
@@ -297,8 +352,8 @@ fn status() -> Result<()> {
 }
 
 fn is_installed(dir: &Path) -> bool {
-    let claude = dir.join("claude");
-    let real = dir.join("claude.real");
+    let claude = dir.join(claude_name());
+    let real = dir.join(claude_real_name());
     if !real.exists() {
         return false;
     }

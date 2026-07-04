@@ -157,6 +157,14 @@ const DEFAULT_DANGER: &[&str] = &[
     "dd if=",
     " > /dev/sd",
     "format ",
+    "del /f",
+    "del /q",
+    "rd /s",
+    "diskpart",
+    "format c:",
+    "cipher /w",
+    "remove-item -recurse",
+    "rm -recurse",
 ];
 
 pub fn danger_file() -> PathBuf {

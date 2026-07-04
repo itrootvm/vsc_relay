@@ -6,10 +6,11 @@ pub fn is_install_command(arg: &str) -> bool {
 }
 
 pub fn run() -> Result<()> {
-    let exe = std::env::current_exe()
-        .context("current exe")?
-        .to_string_lossy()
-        .to_string();
+    let exe = quote_exe(
+        &std::env::current_exe()
+            .context("current exe")?
+            .to_string_lossy(),
+    );
     let home = dirs::home_dir().context("no home dir")?;
     let settings = home.join(".claude").join("settings.json");
 
@@ -53,6 +54,16 @@ pub fn run() -> Result<()> {
     println!("installed relay hooks into {}", settings.display());
     println!("restart Claude Code sessions to pick them up");
     Ok(())
+}
+
+#[cfg(windows)]
+fn quote_exe(exe: &str) -> String {
+    format!("\"{exe}\"")
+}
+
+#[cfg(not(windows))]
+fn quote_exe(exe: &str) -> String {
+    exe.to_string()
 }
 
 fn upsert(hooks: &mut Map<String, Value>, event: &str, cmd: &str, matcher: Option<&str>) {
