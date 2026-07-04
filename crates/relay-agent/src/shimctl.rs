@@ -183,6 +183,10 @@ fn install_one(dir: &Path) -> Result<String> {
     let real = dir.join(claude_real_name());
     let shim = shim_binary()?;
 
+    if is_installed(dir) && same_bytes(&claude, &shim) {
+        return Ok(format!("shim already current at {}", claude.display()));
+    }
+
     if !real.exists() {
         let size = std::fs::metadata(&claude).map(|m| m.len()).unwrap_or(0);
         if size < MIN_REAL_BYTES {
@@ -198,8 +202,38 @@ fn install_one(dir: &Path) -> Result<String> {
     let tmp = dir.join(format!("claude.tmp.{}", std::process::id()));
     std::fs::copy(&shim, &tmp).context("copy shim into place")?;
     crate::fsutil::set_executable(&tmp).context("chmod shim")?;
-    std::fs::rename(&tmp, &claude).context("atomic swap shim")?;
+    if let Err(e) = std::fs::rename(&tmp, &claude) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e).with_context(|| {
+            format!(
+                "atomic swap shim at {} (close every open Claude Code chat first; a running chat locks the file)",
+                claude.display()
+            )
+        });
+    }
     Ok(format!("installed shim at {}", claude.display()))
+}
+
+fn same_bytes(a: &Path, b: &Path) -> bool {
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(ma), Ok(mb)) if ma.len() != mb.len() => return false,
+        (Ok(_), Ok(_)) => {}
+        _ => return false,
+    }
+    match (std::fs::read(a), std::fs::read(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
+fn sweep_shim_temp(dir: &Path) {
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            if e.file_name().to_string_lossy().starts_with("claude.tmp.") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
 }
 
 pub fn install_shim() -> Result<String> {
@@ -210,6 +244,7 @@ pub fn install_shim() -> Result<String> {
     let mut ok: Vec<String> = Vec::new();
     let mut errs: Vec<String> = Vec::new();
     for dir in &dirs {
+        sweep_shim_temp(dir);
         match install_one(dir) {
             Ok(m) => ok.push(m),
             Err(e) => errs.push(format!("{}: {e}", dir.display())),
@@ -317,11 +352,16 @@ fn uninstall() -> Result<()> {
     }
     let mut restored = 0;
     for dir in &dirs {
+        sweep_shim_temp(dir);
         let claude = dir.join(claude_name());
         let real = dir.join(claude_real_name());
         if real.exists() {
-            std::fs::rename(&real, &claude)
-                .with_context(|| format!("restore real binary at {}", claude.display()))?;
+            std::fs::rename(&real, &claude).with_context(|| {
+                format!(
+                    "restore real binary at {} (close every open Claude Code chat first; a running chat locks the file)",
+                    claude.display()
+                )
+            })?;
             println!("restored real binary at {}", claude.display());
             restored += 1;
         }
