@@ -92,7 +92,7 @@ struct RelayApp {
 impl RelayApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-        let cfg_dir = home.join(".config").join("vsc-relay");
+        let cfg_dir = gui_config_dir();
         let env_file = cfg_dir.join("relay.env");
         let relay_dir = home.join(".vsc-relay");
         let stats_file = relay_dir.join("stats.json");
@@ -152,7 +152,7 @@ impl RelayApp {
             stats_file,
             log_file,
         };
-        app.launch_at_login = app.autostart_path().exists();
+        app.launch_at_login = app.is_autostart_enabled();
         app.refresh_env();
         app.refresh_stats();
         app.check_update();
@@ -237,12 +237,34 @@ impl RelayApp {
         !self.token.trim().is_empty() && !self.secret.trim().is_empty()
     }
 
+    #[cfg(not(windows))]
     fn autostart_path(&self) -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join(".config")
             .join("autostart")
             .join("vsc-relay.desktop")
+    }
+
+    #[cfg(not(windows))]
+    fn is_autostart_enabled(&self) -> bool {
+        self.autostart_path().exists()
+    }
+
+    #[cfg(windows)]
+    fn is_autostart_enabled(&self) -> bool {
+        Command::new("reg")
+            .args([
+                "query",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                "/v",
+                "VSCRelay",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 
     fn refresh_env(&mut self) {
@@ -391,6 +413,7 @@ impl RelayApp {
         }
     }
 
+    #[cfg(not(windows))]
     fn set_launch_at_login(&mut self, on: bool) {
         let path = self.autostart_path();
         if on {
@@ -406,6 +429,30 @@ impl RelayApp {
             let _ = std::fs::write(&path, entry);
         } else {
             let _ = std::fs::remove_file(&path);
+        }
+        self.launch_at_login = on;
+    }
+
+    #[cfg(windows)]
+    fn set_launch_at_login(&mut self, on: bool) {
+        let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+        if on {
+            let exe = std::env::current_exe()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| "vsc-relay-gui.exe".to_string());
+            let _ = Command::new("reg")
+                .args([
+                    "add", key, "/v", "VSCRelay", "/t", "REG_SZ", "/d", &exe, "/f",
+                ])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        } else {
+            let _ = Command::new("reg")
+                .args(["delete", key, "/v", "VSCRelay", "/f"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
         }
         self.launch_at_login = on;
     }
@@ -907,14 +954,31 @@ fn stat_card(ui: &mut egui::Ui, title: &str, value: &str) {
         });
 }
 
+fn gui_config_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        dirs::config_dir()
+            .map(|d| d.join("vsc-relay"))
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+    #[cfg(not(windows))]
+    {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join(".config")
+            .join("vsc-relay")
+    }
+}
+
 fn find_agent_binary() -> PathBuf {
+    let name = format!("vsc-relay-agent{}", std::env::consts::EXE_SUFFIX);
     if let Ok(exe) = std::env::current_exe() {
-        let sib = exe.with_file_name("vsc-relay-agent");
+        let sib = exe.with_file_name(&name);
         if sib.exists() {
             return sib;
         }
     }
-    PathBuf::from("vsc-relay-agent")
+    PathBuf::from(name)
 }
 
 fn parse_env_file(path: &PathBuf) -> BTreeMap<String, String> {
@@ -958,7 +1022,13 @@ fn pump(stream: impl Read, tx: Sender<String>, log_path: PathBuf) {
 }
 
 #[cfg(windows)]
-fn kill_stray_daemons() {}
+fn kill_stray_daemons() {
+    let _ = Command::new("taskkill")
+        .args(["/IM", "vsc-relay-agent.exe", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
 
 #[cfg(unix)]
 fn kill_stray_daemons() {
@@ -1019,9 +1089,19 @@ fn set_mode(path: &PathBuf, mode: u32) {
 #[cfg(windows)]
 fn set_mode(_path: &PathBuf, _mode: u32) {}
 
+#[cfg(not(windows))]
 fn open_url(url: &str) {
     let _ = Command::new("xdg-open")
         .arg(url)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
+#[cfg(windows)]
+fn open_url(url: &str) {
+    let _ = Command::new("cmd")
+        .args(["/C", "start", "", url])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
