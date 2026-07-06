@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/itrootvm/vsc_relay/security/policy
+    about: Report a vulnerability privately. Do not open a public issue for security problems.
+  - name: Documentation
+    url: https://itrootvm.github.io/vsc_relay/
+    about: Read the setup, troubleshooting, and threat-model docs before filing.
