@@ -2,8 +2,8 @@
 
 ## Is This A Cloud Service?
 
-No. The relay runs on your Mac. Telegram traffic goes through Telegram Bot API by outbound
-HTTPS because Telegram bots require it.
+No. The relay runs locally on your own machine (macOS, Linux, or Windows). Telegram traffic
+goes through Telegram Bot API by outbound HTTPS because Telegram bots require it.
 
 ## Does It Work Without The Shim?
 
@@ -19,15 +19,16 @@ background.
 ## Does It Need Accessibility Permission?
 
 Only for window focus and GUI fallback actions. Reading session state does not require
-screen scraping.
+screen scraping. Accessibility is the macOS backend; on Linux the same actions use X11
+(xdotool) and on Windows they use the Win32 API with an interactive desktop session.
 
 ## Where Are Logs?
 
 Runtime logs and state live under `~/.vsc-relay`.
 
-## Can Several Macs Use One Bot?
+## Can Several Machines Use One Bot?
 
-This is planned but not a primary workflow. Use one bot per Mac if you want the
+This is planned but not a primary workflow. Use one bot per machine if you want the
 least confusing setup.
 
 ## Does The App Support Intel Macs?

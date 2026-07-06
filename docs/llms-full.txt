@@ -4,7 +4,7 @@ VSC Relay controls Claude Code in VS Code from Telegram. It is intended for deve
 leave long-running coding-agent tasks active and need to answer questions, approve or deny
 actions, stop work, continue work, or send a follow-up prompt from a phone.
 
-The relay runs locally on macOS. It reads local session files written by VS Code, Claude
+The relay runs locally on macOS, Linux, and Windows. It reads local session files written by VS Code, Claude
 Code, and Codex. It talks to Telegram Bot API by outbound HTTPS long polling. It does not
 open an inbound network port and does not rely on a hosted relay backend.
 
@@ -13,11 +13,13 @@ Core components:
 - `relay-agent`: daemon, Telegram bot, hook handling, session watching, and control actions.
 - `relay-discovery`: VS Code, Claude Code, Codex, and git discovery.
 - `relay-adapters`: transcript and session readers.
-- `relay-control`: macOS window focus and GUI fallback.
+- `relay-control`: window focus and GUI fallback (macOS Accessibility, Linux xdotool/X11, Windows Win32).
 - `relay-core`: shared state and ids.
 - `relay-shim`: optional Claude Code helper wrapper for background control.
-- `VSCRelay.app`: SwiftUI setup app for token storage, pairing key setup, logs, service
-  control, and shim management.
+- `VSCRelay.app`: SwiftUI setup app on macOS for token storage, pairing key setup, logs,
+  service control, and shim management.
+- `relay-gui`: egui desktop setup app on Linux and Windows for the same setup, logs,
+  service control, and shim management.
 
 Telegram commands:
 
@@ -41,19 +43,21 @@ Support matrix:
 - Claude Code in VS Code: read status, send prompts, answer questions with shim, permission
   actions, model and permission-mode controls.
 - Codex in VS Code: experimental read support and window focus only. No background prompt
-  injection, question answers, permission actions, or model controls in 0.1.4.
+  injection, question answers, permission actions, or model controls in 0.3.0.
 
 Security model:
 
 - Pairing is required through `/auth <key>` or `TELEGRAM_ALLOWED_CHATS`.
 - App secrets are stored in macOS Keychain.
-- Terminal secrets are read from `.env`.
-- Runtime state is under `~/.vsc-relay`.
-- Local control uses Unix sockets under the current user account.
+- Terminal secrets are read from `.env`; the daemon also loads `relay.env` from the platform
+  config dir (`~/.config/vsc-relay` on Unix, `%APPDATA%\vsc-relay` on Windows).
+- Runtime state is under `~/.vsc-relay` on Unix.
+- Local control uses Unix domain sockets in an owner-only 0700 directory on macOS and Linux,
+  and per-user named pipes on Windows.
 - The dangerous-command guard blocks configured patterns surfaced through Claude Code hooks.
 - Current limitations include no full policy engine, no fail-closed guard mode, no
   append-only audit journal, no transcript redaction layer, and no complete Codex background
   control.
 
-Current version: 0.1.4. Current packaged builds target Apple Silicon Macs. Universal Intel
-support is planned.
+Current version: 0.3.0. Packaged builds cover macOS (Apple Silicon), Linux (static musl),
+and Windows (x64). Intel macOS support is planned.

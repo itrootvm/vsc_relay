@@ -102,8 +102,8 @@ window. Full background control for Codex is not implemented yet.
 | Linux (Wayland) | `.deb`, tarball, or `vsc-relay-gui`/systemd | Yes | Limited (compositor blocks key injection) |
 | Windows 10/11 | `.zip` + `install.ps1`, or `vsc-relay-gui.exe` | Yes, via named pipes | Yes, via Win32 (interactive session) |
 
-The background shim path — sending prompts, answering questions, permission Allow/Deny, and
-model/effort/mode — is the primary control channel and needs no display. Window focus and
+The background shim path (sending prompts, answering questions, permission Allow/Deny, and
+model/effort/mode) is the primary control channel and needs no display. Window focus and
 GUI fallback (Codex, un-shimmed sessions) need macOS Accessibility, Linux X11 + `xdotool`, or
 Windows Win32 in an interactive desktop session.
 Linux binaries are static (musl), so one build runs across distributions.
@@ -152,8 +152,8 @@ Current packaged macOS builds target Apple Silicon Macs. A universal build is on
 
 ## Install (Linux)
 
-Linux ships a GUI app (`vsc-relay-gui`, built with egui, runs on any desktop environment —
-GNOME, KDE, XFCE — on X11 or Wayland) plus a headless systemd service. All downloads are on
+Linux ships a GUI app (`vsc-relay-gui`, built with egui, runs on any desktop environment
+like GNOME, KDE, or XFCE, on X11 or Wayland) plus a headless systemd service. All downloads are on
 the [Releases](https://github.com/itrootvm/vsc_relay/releases/latest) page.
 
 **Debian / Ubuntu (`.deb`, recommended):**
@@ -232,8 +232,8 @@ registers a logon task that runs the relay in your interactive session. Then:
    `%LOCALAPPDATA%\Programs\vsc-relay\vsc-relay-agent.exe`.
 3. In Telegram, send `/auth <key>` to your bot, then `/menu`.
 
-The background shim path — send prompts, answer questions, permission Allow/Deny, and
-model/effort/mode — runs over local Windows named pipes and needs no display. Window focus and
+The background shim path (send prompts, answer questions, permission Allow/Deny, and
+model/effort/mode) runs over local Windows named pipes and needs no display. Window focus and
 GUI fallback need an interactive desktop session (the logon task runs there; a Session-0
 service cannot focus windows). Secrets live in `%APPDATA%\vsc-relay\relay.env`, tightened to
 your account with `icacls`. Update in place with `vsc-relay-agent.exe self-update`. From a
@@ -321,9 +321,9 @@ When the Claude Code extension updates, new chats may need the shim installed ag
   added through `TELEGRAM_ALLOWED_CHATS`.
 - The relay does not open an inbound network port. Telegram communication is outbound
   HTTPS long polling.
-- Runtime IPC is local only: Unix domain sockets (0600) under your account on macOS and
-  Linux, and per-user-DACL named pipes (PIPE_REJECT_REMOTE_CLIENTS) on Windows. No inbound
-  network port is opened.
+- Runtime IPC is local only: Unix domain sockets in an owner-only `0700` directory under
+  your account on macOS and Linux, and per-user-DACL named pipes
+  (PIPE_REJECT_REMOTE_CLIENTS) on Windows. No inbound network port is opened.
 - The app stores secrets in Keychain. The terminal mode reads them from `.env`; keep that
   file private and out of version control. On Windows, secrets live in
   `%APPDATA%\vsc-relay\relay.env`, tightened to your account with `icacls`.

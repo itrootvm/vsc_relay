@@ -3,8 +3,8 @@
 VSC Relay lets you control Claude Code in VS Code from Telegram: read sessions, answer
 questions, approve or deny commands, and keep coding agents moving from your phone.
 
-It runs locally on macOS, uses outbound HTTPS to Telegram, and reads local agent session
-state written by VS Code, Claude Code, and Codex.
+It runs locally on macOS, Linux, and Windows, uses outbound HTTPS to Telegram, and reads
+local agent session state written by VS Code, Claude Code, and Codex.
 
 ## Start Here
 
@@ -25,4 +25,4 @@ state written by VS Code, Claude Code, and Codex.
 | Claude Code in VS Code | Yes | Yes | Yes, with shim | Yes | Yes, with shim |
 | Codex in VS Code | Experimental | GUI fallback only | No | No | No |
 
-Packaged builds currently target Apple Silicon Macs. Universal Intel support is planned.
+Packaged builds cover Apple Silicon Macs, x86_64 Linux, and x64 Windows 10/11. Universal Intel macOS support is planned.

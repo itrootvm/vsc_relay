@@ -25,17 +25,31 @@ restart the relay and try `/focus <workspace>` again.
 On Linux, window focus and GUI fallback need an X11 (or XWayland) session and `xdotool`
 (`sudo apt install xdotool xclip xdg-utils`). Under a native Wayland session the compositor
 usually blocks key injection into other windows; prefer an X11/Xorg session for the GUI
-fallback. If the relay runs as a systemd user service, it must inherit `DISPLAY` — the
+fallback. If the relay runs as a systemd user service, it must inherit `DISPLAY`. The
 installer runs `systemctl --user import-environment DISPLAY XAUTHORITY WAYLAND_DISPLAY
 XDG_SESSION_TYPE`; re-run it and restart the service if you started the session differently. The background shim path does
 not need a display and keeps working regardless, so sending, answering questions,
 permissions, and model/effort/mode work even when `/focus` does not.
 
+On Windows, window focus and GUI fallback need an interactive desktop session. The logon task
+the installer registers runs there; a Session-0 service cannot focus windows. The background
+shim path over named pipes needs no session and keeps working, so sending, answering
+questions, permissions, and model/effort/mode work even when `/focus` does not.
+
 ## The Shim Looks Broken
+
+On macOS and Linux:
 
 ```bash
 ./shim.sh status
 ./shim.sh uninstall
+```
+
+On Windows:
+
+```powershell
+.\shim.ps1 status
+.\shim.ps1 uninstall
 ```
 
 Restart VS Code after uninstalling. If the Claude Code extension still fails to start,
