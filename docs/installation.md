@@ -1,7 +1,8 @@
 # Installation
 
 The macOS app is the simplest path on a Mac. On Linux, use the release tarball with a
-systemd user service. Both platforms share the same daemon, shim, and terminal helpers.
+systemd user service. On Windows, use the zip installer, which registers a logon Scheduled
+Task. All three platforms share the same daemon, shim, and terminal helpers.
 
 ## App Install (macOS)
 
@@ -107,6 +108,37 @@ Each machine runs its own bot for now: create a separate bot token per machine (
 with `RELAY_MACHINE_NAME`). A single-bot hub that fans out to every machine is on the
 roadmap.
 
+## Windows Install
+
+Windows has the same GUI app (`vsc-relay-gui.exe`) and a background agent that starts at
+logon. Windows 10 or 11 (x64) is supported.
+
+1. Download `vsc-relay-<version>-windows-<arch>.zip` from the latest GitHub release and
+   unpack it.
+2. From PowerShell, run the installer:
+
+   ```powershell
+   .\install.ps1
+   ```
+
+   It copies `vsc-relay-agent.exe`, `vsc-claude-shim.exe`, and `vsc-relay-gui.exe` to
+   `%LOCALAPPDATA%\Programs\vsc-relay`, writes an environment file at
+   `%APPDATA%\vsc-relay\relay.env` (tightened with icacls), wires the Claude Code hooks and
+   shim, and registers a `VSCRelay` logon Scheduled Task that runs in your interactive
+   session.
+3. Edit `%APPDATA%\vsc-relay\relay.env`, set `TELEGRAM_BOT_TOKEN` and `RELAY_PAIR_SECRET`,
+   then start the agent (or launch `vsc-relay-gui.exe` and click Start).
+4. In Telegram, send `/auth <key>` to your bot and `/menu`.
+
+Window focus and GUI fallback use the built-in Win32 backend and need an interactive desktop
+session, which the logon task provides. The background shim path works without one.
+
+Update in place with `vsc-relay-agent self-update` (the GUI's Update banner runs the same
+command); on Windows it downloads the release `.zip`, verifies its sha256, atomically swaps
+the binaries, and re-wraps the shim. Uninstall with `.\uninstall.ps1`, which stops the agent,
+removes the shim and the logon task, and deletes the installed binaries; your `relay.env` is
+kept.
+
 ## Terminal Service
 
 ```bash
@@ -118,6 +150,8 @@ cp .env.example .env
 
 Set `TELEGRAM_BOT_TOKEN` and `RELAY_PAIR_SECRET` in `.env` before starting the service.
 
+On Windows, use `.\svc.ps1 start|status|logs` for the same daemon.
+
 ## Shim Install
 
 Install the Claude Code shim if you want background prompts and question answers:
@@ -128,6 +162,7 @@ Install the Claude Code shim if you want background prompts and question answers
 ```
 
 Only Claude Code chats started after shim installation use the background control channel.
+On Windows, use `.\shim.ps1 install|status|uninstall` instead.
 
 Uninstall the shim:
 
@@ -152,11 +187,20 @@ Linux (needs Rust stable; `musl-tools` for a portable static build):
 ./build_linux.sh
 ```
 
-It builds the daemon and shim, preferring the static `x86_64-unknown-linux-musl` target
+It builds the daemon, shim, and GUI, preferring the static `x86_64-unknown-linux-musl` target
 when available and falling back to the host `gnu` target, and stages
 `dist/vsc-relay-<version>-linux-<arch>.tar.gz` with the installer and helpers.
 
-To just build the binaries on either platform:
+Windows (needs Rust stable and the MSVC toolchain):
+
+```powershell
+.\build_windows.ps1
+```
+
+It builds the agent, shim, and GUI for `x86_64-pc-windows-msvc` and stages
+`dist\vsc-relay-<version>-windows-<arch>.zip` with `install.ps1` and helpers.
+
+To just build the binaries on any platform:
 
 ```bash
 cargo build --release

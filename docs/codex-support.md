@@ -1,7 +1,7 @@
 # Codex Support
 
 Claude Code is the primary supported target. Codex support is intentionally narrower in
-`0.1.4`.
+`0.3.0`.
 
 ## What Works
 
@@ -9,7 +9,7 @@ Claude Code is the primary supported target. Codex support is intentionally narr
 - Reading session status when local session data is available.
 - Sending completion or error notifications.
 - Focusing the matching VS Code window.
-- GUI fallback actions when the user grants Accessibility permission.
+- GUI fallback actions where the platform control backend is available (macOS Accessibility, Linux X11 with xdotool, or Windows).
 
 ## What Does Not Work Yet
 

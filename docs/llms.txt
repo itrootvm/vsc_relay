@@ -1,6 +1,6 @@
 # VSC Relay
 
-VSC Relay is a local macOS bridge for controlling Claude Code in VS Code from Telegram. It
+VSC Relay is a local bridge for controlling Claude Code in VS Code from Telegram, running on macOS, Linux, and Windows. It
 lets a paired Telegram chat read session status, send prompts, answer Claude Code questions
 with the shim, approve or deny surfaced permission requests, stop or continue work, focus VS
 Code windows, and manage blocked-command patterns.
@@ -10,10 +10,10 @@ Primary target: Claude Code in VS Code.
 Secondary target: Codex in VS Code, experimental read and focus support only.
 
 Security summary: no hosted backend, no inbound network port, outbound HTTPS to Telegram
-Bot API, app secrets in Keychain, terminal secrets in `.env`, runtime state under
-`~/.vsc-relay`, local Unix sockets, pairing required before Telegram control.
+Bot API, macOS app secrets in Keychain, terminal secrets in `.env`, Linux and Windows secrets in `relay.env`, runtime state under
+`~/.vsc-relay`, local Unix sockets on macOS and Linux, and named pipes on Windows, pairing required before Telegram control.
 
-Current version: 0.1.4.
+Current version: 0.3.0.
 
 Main docs:
 

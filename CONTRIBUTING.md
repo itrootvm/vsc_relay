@@ -1,6 +1,7 @@
 # Contributing
 
-VSC Relay is a macOS Rust project with a small SwiftUI wrapper. Keep changes narrow,
+VSC Relay is a cross-platform Rust project (macOS, Linux, Windows) with a SwiftUI
+wrapper on macOS and an egui desktop GUI on Linux and Windows. Keep changes narrow,
 testable, and honest about what is implemented.
 
 ## Required Checks
@@ -20,19 +21,21 @@ If a check cannot run on your machine, say which check failed and why.
 
 Requirements:
 
-- macOS 14 or later;
+- macOS 14 or later, Linux, or Windows 10 or 11 (x64);
 - Rust stable;
-- Xcode command line tools;
+- Xcode command line tools on macOS, or MSVC build tools on Windows; on Linux, X11 plus xdotool for the GUI or window control (the background shim path needs neither);
 - a Telegram bot token if you test the bot flow;
 - Claude Code in VS Code if you test shim or background control.
 
-Build the app and disk image:
+Build the release artifacts for your platform:
 
 ```bash
-./build_app.sh
+./build_app.sh          # macOS: VSCRelay.app + VSCRelay.dmg
+./build_linux.sh        # Linux: static musl tarball + .deb
+./build_windows.ps1     # Windows: zip + install.ps1
 ```
 
-Run the headless service:
+Run the headless service (macOS and Linux):
 
 ```bash
 cp .env.example .env
@@ -40,9 +43,12 @@ cp .env.example .env
 ./svc.sh logs
 ```
 
+On Windows, use `.\svc.ps1 start` and `.\svc.ps1 logs`; the daemon reads
+`%APPDATA%\vsc-relay\relay.env` instead of `.env`.
+
 ## Pull Request Guidelines
 
-- Do not commit `.env`, bot tokens, pairing keys, logs, `target/`, or `build/`.
+- Do not commit `.env`, `relay.env`, bot tokens, pairing keys, logs, `target/`, `dist/`, or `build/`.
 - Keep README and docs ASCII-only.
 - Update `CHANGELOG.md` for user-visible changes.
 - Keep feature claims aligned with implemented behavior.
@@ -51,7 +57,7 @@ cp .env.example .env
 
 ## Release Versioning
 
-The repository version is `0.1.4`. Release version changes must keep these files in sync:
+The repository version is `0.3.0`. Release version changes must keep these files in sync:
 
 - `VERSION`;
 - `Cargo.toml`;
