@@ -39,6 +39,9 @@ pub async fn on_request(
         warn!(target: "relay::perm", pid, tool = %tool_name, "can_use_tool without request_id; cannot answer remotely");
         return;
     }
+    if perms.lock().await.contains_key(&request_id) {
+        return;
+    }
     let mut p = PermPending {
         request_id: request_id.clone(),
         pid,
