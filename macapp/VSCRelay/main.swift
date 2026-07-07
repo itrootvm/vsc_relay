@@ -204,6 +204,10 @@ final class RelayController: ObservableObject {
         var env = ProcessInfo.processInfo.environment
         env["TELEGRAM_BOT_TOKEN"] = token
         env["RELAY_PAIR_SECRET"] = secret
+        if env["RUST_LOG"] == nil,
+            FileManager.default.fileExists(atPath: relayDir.appendingPathComponent("debug").path) {
+            env["RUST_LOG"] = "debug,hyper=warn,reqwest=warn,rustls=warn,h2=warn,tungstenite=warn"
+        }
         proc.environment = env
         let pipe = Pipe()
         proc.standardOutput = pipe

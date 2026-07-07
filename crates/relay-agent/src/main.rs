@@ -47,12 +47,14 @@ struct Emitted {
     alias: String,
     machine: String,
     event: RelayEvent,
+    usage: Option<relay_core::state::TokenUsage>,
 }
 
 #[derive(Clone)]
 struct Track {
     label: String,
     fingerprint: Option<String>,
+    mode: Option<String>,
 }
 
 struct WinCtx {
@@ -62,6 +64,8 @@ struct WinCtx {
     agent: AgentKind,
     session_ref: String,
     title: Option<String>,
+    usage: Option<relay_core::state::TokenUsage>,
+    mode: Option<String>,
 }
 
 #[tokio::main]
@@ -214,6 +218,20 @@ async fn main() -> anyhow::Result<()> {
             tokio::spawn(async move {
                 while let Some(em) = rx.recv().await {
                     info!("relay-event {} {}", em.event.kind.tag(), em.alias);
+                    if let Some(u) = em.usage {
+                        info!(
+                            target: "relay::trace",
+                            pipeline = "disk",
+                            stage = "tokens",
+                            kind = em.event.kind.tag(),
+                            alias = %em.alias,
+                            in_tok = u.input,
+                            out_tok = u.output,
+                            cache_read = u.cache_read,
+                            cache_creation = u.cache_creation,
+                            "turn tokens"
+                        );
+                    }
                     stats::record(em.event.kind.tag());
                     if matches!(em.event.kind, EventKind::SessionStarted { .. }) {
                         continue;
@@ -481,7 +499,7 @@ async fn scan_and_emit(
             } else {
                 None
             };
-            let (state, ai_title, git_b, excerpt) = match read {
+            let (state, ai_title, git_b, excerpt, usage, mode) = match read {
                 Some(res) => (
                     res.state.clone(),
                     res.reduction.ai_title.clone(),
@@ -490,8 +508,10 @@ async fn scan_and_emit(
                         .last_assistant_text
                         .clone()
                         .unwrap_or_default(),
+                    res.reduction.last_turn_tokens,
+                    res.reduction.mode.clone(),
                 ),
-                None => (ClaudeState::Idle, None, None, String::new()),
+                None => (ClaudeState::Idle, None, None, String::new(), None, None),
             };
             c.state = state.clone();
             c.title = ai_title;
@@ -502,6 +522,8 @@ async fn scan_and_emit(
                 agent: AgentKind::ClaudeCode,
                 session_ref: c.session_id.clone(),
                 title: c.name.clone(),
+                usage,
+                mode,
             };
             let entrypoint = c.entrypoint.clone().unwrap_or_default();
             let kinds = claude_events(tracker, &ctx, &state, entrypoint, excerpt);
@@ -527,6 +549,8 @@ async fn scan_and_emit(
                 agent: AgentKind::Codex,
                 session_ref: a.agent.thread_id.clone(),
                 title: Some(a.agent.title.clone()),
+                usage: None,
+                mode: None,
             };
             let excerpt = a.last_message.clone().unwrap_or_default();
             let cur_label = a.agent.state.label().to_string();
@@ -564,6 +588,19 @@ fn claude_events(
         kinds.push(EventKind::SessionStarted { entrypoint });
     }
     let prev_label = prev.as_ref().map(|t| t.label.clone());
+    if let Some(cur) = ctx.mode.as_deref() {
+        let prev_mode = prev.as_ref().and_then(|t| t.mode.clone());
+        if prev_mode.as_deref() != Some(cur) {
+            let is_alert = matches!(cur, "acceptEdits" | "bypassPermissions");
+            if prev_mode.is_some() || is_alert {
+                kinds.push(EventKind::ModeChanged {
+                    from: prev_mode.unwrap_or_else(|| "unknown".into()),
+                    to: cur.to_string(),
+                    alert: is_alert,
+                });
+            }
+        }
+    }
     match state {
         ClaudeState::PendingQuestion(q) => {
             kinds.push(EventKind::QuestionAsked {
@@ -655,21 +692,27 @@ fn emit_all(
             alias: alias.to_string(),
             machine: machine.to_string(),
             event,
+            usage: ctx.usage,
         });
         tracker.insert(
             key.clone(),
             Track {
                 label: cur_label.clone(),
                 fingerprint: Some(fp),
+                mode: ctx.mode.clone(),
             },
         );
     }
     tracker
         .entry(key)
-        .and_modify(|t| t.label = cur_label.clone())
+        .and_modify(|t| {
+            t.label = cur_label.clone();
+            t.mode = ctx.mode.clone();
+        })
         .or_insert(Track {
             label: cur_label,
             fingerprint: None,
+            mode: ctx.mode.clone(),
         });
 }
 
@@ -709,6 +752,16 @@ fn event_detail(e: &RelayEvent) -> String {
         }
         EventKind::Error { message } => format!("ERROR: {message}"),
         EventKind::StateChanged { from, to } => format!("{from} -> {to}"),
+        EventKind::ModeChanged { from, to, .. } => {
+            let note = match to.as_str() {
+                "bypassPermissions" => {
+                    " - permissions are bypassed; the agent will not ask before running tools"
+                }
+                "acceptEdits" => " - edits may be auto-accepted without asking",
+                _ => "",
+            };
+            format!("MODE: {from} -> {to}{note}")
+        }
         EventKind::SubagentActivity { count } => format!("subagents: {count}"),
         EventKind::SessionEnded => "session ended".to_string(),
     }
@@ -765,6 +818,8 @@ fn format_event(machine: &str, alias: &str, e: &RelayEvent) -> (String, Option<s
         EventKind::Error { .. } => "⚠️",
         EventKind::TurnComplete { .. } => "🟢",
         EventKind::SessionStarted { .. } => "•",
+        EventKind::ModeChanged { alert: true, .. } => "🚨",
+        EventKind::ModeChanged { alert: false, .. } => "🔀",
         _ => "▫️",
     };
     let branch = e.git_branch.as_deref().unwrap_or("-");
@@ -877,6 +932,10 @@ fn format_event(machine: &str, alias: &str, e: &RelayEvent) -> (String, Option<s
             rows.push(row);
             Some(keyboard(rows))
         }
+        EventKind::ModeChanged { .. } => Some(keyboard(vec![vec![(
+            "👁 Focus".to_string(),
+            format!("act:focus:{alias}"),
+        )]])),
         _ => None,
     };
     (text, kb)
@@ -2128,5 +2187,84 @@ mod model_tests {
         assert_eq!(model_friendly("claude-haiku-4-5-20251001"), "Haiku 4.5");
         assert_eq!(model_tier("claude-fable-5"), "fable");
         assert_eq!(model_friendly("claude-fable-5"), "Fable 5");
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+
+    fn ctx_mode(mode: Option<&str>) -> WinCtx {
+        WinCtx {
+            machine_id: MachineId("m".into()),
+            workspace: PathBuf::from("/tmp/ws"),
+            branch: None,
+            agent: AgentKind::ClaudeCode,
+            session_ref: "sess".into(),
+            title: None,
+            usage: None,
+            mode: mode.map(|s| s.to_string()),
+        }
+    }
+
+    fn seeded(ctx: &WinCtx, mode: Option<&str>) -> HashMap<String, Track> {
+        let mut tracker = HashMap::new();
+        tracker.insert(
+            key_of(ctx),
+            Track {
+                label: "idle".into(),
+                fingerprint: None,
+                mode: mode.map(|s| s.to_string()),
+            },
+        );
+        tracker
+    }
+
+    fn find_mode_change(kinds: &[EventKind]) -> Option<(String, String, bool)> {
+        kinds.iter().find_map(|k| match k {
+            EventKind::ModeChanged { from, to, alert } => Some((from.clone(), to.clone(), *alert)),
+            _ => None,
+        })
+    }
+
+    fn run(tracker: &mut HashMap<String, Track>, ctx: &WinCtx) -> Vec<EventKind> {
+        claude_events(
+            tracker,
+            ctx,
+            &ClaudeState::Idle,
+            "cli".into(),
+            String::new(),
+        )
+    }
+
+    #[test]
+    fn first_observed_bypass_alerts_from_unknown() {
+        let ctx = ctx_mode(Some("bypassPermissions"));
+        let mut tracker = HashMap::new();
+        let mc = find_mode_change(&run(&mut tracker, &ctx)).expect("mode change");
+        assert_eq!(mc, ("unknown".into(), "bypassPermissions".into(), true));
+    }
+
+    #[test]
+    fn default_to_accept_edits_alerts() {
+        let ctx = ctx_mode(Some("acceptEdits"));
+        let mut tracker = seeded(&ctx, Some("default"));
+        let mc = find_mode_change(&run(&mut tracker, &ctx)).expect("mode change");
+        assert_eq!(mc, ("default".into(), "acceptEdits".into(), true));
+    }
+
+    #[test]
+    fn default_to_plan_no_alert() {
+        let ctx = ctx_mode(Some("plan"));
+        let mut tracker = seeded(&ctx, Some("default"));
+        let mc = find_mode_change(&run(&mut tracker, &ctx)).expect("mode change");
+        assert_eq!(mc, ("default".into(), "plan".into(), false));
+    }
+
+    #[test]
+    fn unchanged_mode_emits_nothing() {
+        let ctx = ctx_mode(Some("default"));
+        let mut tracker = seeded(&ctx, Some("default"));
+        assert!(find_mode_change(&run(&mut tracker, &ctx)).is_none());
     }
 }
