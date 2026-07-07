@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-The current supported public version is `0.3.0`. Older builds should be upgraded before
+The current supported public version is `0.4.0`. Older builds should be upgraded before
 reporting a defect unless the issue is specifically about upgrade or uninstall behavior.
 
 ## Reporting Vulnerabilities
@@ -78,7 +78,7 @@ The installer refuses to replace a file that does not look like the real Claude 
 
 ## Current Limitations
 
-These items are known limitations for `0.3.0` and are tracked as follow-up hardening work:
+These items are known limitations for `0.4.0` and are tracked as follow-up hardening work:
 
 - no policy engine for per-command allow or deny rules;
 - no fail-closed guard mode if hooks are unavailable;

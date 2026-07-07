@@ -54,4 +54,4 @@ relay does not open an inbound network port.
 
 Claude Code background control depends on the optional shim. Without the shim, the relay can
 still observe session status and use GUI fallback actions. Codex background control is not
-implemented in `0.3.0`.
+implemented in `0.4.0`.

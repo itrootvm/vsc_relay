@@ -1,7 +1,7 @@
 # Codex Support
 
 Claude Code is the primary supported target. Codex support is intentionally narrower in
-`0.3.0`.
+`0.4.0`.
 
 ## What Works
 

@@ -57,7 +57,7 @@ On Windows, use `.\svc.ps1 start` and `.\svc.ps1 logs`; the daemon reads
 
 ## Release Versioning
 
-The repository version is `0.3.0`. Release version changes must keep these files in sync:
+The repository version is `0.4.0`. Release version changes must keep these files in sync:
 
 - `VERSION`;
 - `Cargo.toml`;
