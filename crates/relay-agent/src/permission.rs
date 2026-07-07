@@ -15,6 +15,7 @@ pub struct PermPending {
     pub input: Value,
     pub cards: Vec<(i64, i64)>,
     pub alias: String,
+    pub session_id: Option<String>,
 }
 
 pub type Permissions = Arc<Mutex<HashMap<String, PermPending>>>;
@@ -50,6 +51,7 @@ pub async fn on_request(
         input,
         cards: Vec::new(),
         alias,
+        session_id: inject::session_id_of(pid),
     };
     let (text, kb) = render(&p);
     for chat in auth.recipients().await {
@@ -110,7 +112,7 @@ pub async fn resolve(
         .await
         .remove(request_id)
         .ok_or_else(|| "permission is no longer active".to_string())?;
-    if !inject::pid_alive(p.pid) {
+    if !inject::session_stable(p.pid, &p.session_id) {
         return Err("session closed - permission is no longer active".to_string());
     }
     let inner = if allow {

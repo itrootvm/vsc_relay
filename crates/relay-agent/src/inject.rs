@@ -44,6 +44,29 @@ pub(crate) fn pid_alive(pid: u32) -> bool {
     relay_ipc::process_alive(pid)
 }
 
+pub(crate) fn session_id_of(pid: u32) -> Option<String> {
+    let f = home()
+        .join(".claude")
+        .join("sessions")
+        .join(format!("{pid}.json"));
+    let txt = std::fs::read_to_string(f).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
+    v.get("sessionId")
+        .and_then(|s| s.as_str())
+        .map(str::to_string)
+}
+
+fn session_ok(captured: Option<&str>, current: Option<&str>) -> bool {
+    match (captured, current) {
+        (Some(a), Some(b)) => a == b,
+        _ => true,
+    }
+}
+
+pub(crate) fn session_stable(pid: u32, captured: &Option<String>) -> bool {
+    pid_alive(pid) && session_ok(captured.as_deref(), session_id_of(pid).as_deref())
+}
+
 pub fn sweep_stale_sockets() {
     relay_ipc::sweep_stale();
 }
@@ -111,4 +134,18 @@ fn gen_uuid() -> String {
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::session_ok;
+
+    #[test]
+    fn session_ok_blocks_only_on_positive_mismatch() {
+        assert!(session_ok(Some("s1"), Some("s1")));
+        assert!(!session_ok(Some("s1"), Some("s2")));
+        assert!(session_ok(Some("s1"), None));
+        assert!(session_ok(None, Some("s2")));
+        assert!(session_ok(None, None));
+    }
 }
