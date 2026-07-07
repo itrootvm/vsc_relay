@@ -13,7 +13,7 @@ Security summary: no hosted backend, no inbound network port, outbound HTTPS to 
 Bot API, macOS app secrets in Keychain, terminal secrets in `.env`, Linux and Windows secrets in `relay.env`, runtime state under
 `~/.vsc-relay`, local Unix sockets on macOS and Linux, and named pipes on Windows, pairing required before Telegram control.
 
-Current version: 0.3.0.
+Current version: 0.4.0.
 
 Main docs:
 

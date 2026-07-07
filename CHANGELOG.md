@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-07-07
+
+- Fixed a double render of AskUserQuestion on tapped sessions. The transcript tail and the
+  shim out socket both used to post a card for the same prompt; the two are now matched by
+  tool use id, so a tapped session shows exactly one interactive card. An untapped session
+  still gets its fallback card, so no prompt is dropped.
+- Fixed a stall where a slow Telegram send could freeze Claude Code output inside VS Code.
+  The shim now writes the editor stdout first and fans out to background readers over bounded
+  per reader channels, so a slow or stuck reader can no longer block the output pump. The
+  daemon reads its socket on a task separate from the Telegram send for the same reason.
+- Added a replay ring in the shim. A background reader that reconnects, for example after the
+  daemon restarts, is re-sent any still pending permission or question request, and answered
+  requests are evicted, so a reconnect does not lose or duplicate a card. A reader disconnect
+  while the session process is still alive is treated as a reconnect window rather than a
+  closed session, so a pending card stays answerable.
+- Added permission mode change alerts. A switch into acceptEdits or bypassPermissions raises
+  an alert in Telegram; other transitions are shown without one.
+- Added per turn token accounting for both Claude Code and Codex (input, output, cache read,
+  and cache creation), recorded per session.
+- Telegram answers and permission decisions are no longer injected into a session that has
+  closed or whose pid has been reused. The pending card carries its session identity and the
+  inject is skipped on a mismatch.
+- Untapped sessions now show a card that points to VS Code instead of option buttons that
+  could not answer the prompt.
+- Auto reshim repairs a freshly updated extension version without a restart. Install status is
+  tracked per extension directory, so a new version is tapped even when an older one is already
+  shimmed.
+- Added detailed lifecycle logging across both pipelines (arrived, sent, pressed, answered in
+  VS Code, resolved, suppressed, mode changed) with per card latency and request and response
+  byte sizes. Logs redact the bot token, tool input, option labels, and raw commands.
+- Split the callback and full text stores so a burst of full text previews can no longer evict
+  an active permission or send callback.
+
 ## 0.3.0 - 2026-07-05
 
 - Windows 10/11 support alongside macOS and Linux. The daemon, shim, discovery, GUI, and

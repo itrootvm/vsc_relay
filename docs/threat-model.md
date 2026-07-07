@@ -9,7 +9,7 @@
 - Ability to approve, deny, stop, continue, or focus work.
 - Local project files reachable by the coding agent.
 
-## In Scope For 0.3.0
+## In Scope For 0.4.0
 
 - Preventing unpaired Telegram chats from controlling the relay.
 - Keeping the relay local to the machine with no inbound network port.
@@ -18,7 +18,7 @@
 - Blocking configured dangerous command patterns surfaced through hooks.
 - Making shim install and uninstall recoverable.
 
-## Out Of Scope For 0.3.0
+## Out Of Scope For 0.4.0
 
 - Full command policy engine.
 - Fail-closed mode when hooks are unavailable.

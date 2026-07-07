@@ -41,4 +41,4 @@ The relay includes a blocked-command guard for risky command patterns surfaced t
 Claude Code hooks. The list can be viewed and changed with `/danger`, `/danger add
 <pattern>`, and `/danger del <pattern>`.
 
-This is not a complete policy engine in `0.3.0`. Treat it as a guardrail, not a sandbox.
+This is not a complete policy engine in `0.4.0`. Treat it as a guardrail, not a sandbox.
