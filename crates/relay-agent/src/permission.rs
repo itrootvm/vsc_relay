@@ -150,7 +150,9 @@ pub async fn void_referenced(perms: &Permissions, pid: u32, line: &Value) -> Vec
     let ids: Vec<String> = map
         .iter()
         .filter(|(_, p)| {
-            p.pid == pid && !p.tool_use_id.is_empty() && line_refs(line, &p.tool_use_id)
+            p.pid == pid
+                && !p.tool_use_id.is_empty()
+                && crate::dedup::refs_tool_use_id(line, &p.tool_use_id)
         })
         .map(|(k, _)| k.clone())
         .collect();
@@ -158,10 +160,4 @@ pub async fn void_referenced(perms: &Permissions, pid: u32, line: &Value) -> Vec
         .filter_map(|id| map.remove(&id))
         .map(|p| p.cards)
         .collect()
-}
-
-fn line_refs(v: &Value, tuid: &str) -> bool {
-    serde_json::to_string(v)
-        .map(|s| s.contains(tuid))
-        .unwrap_or(false)
 }

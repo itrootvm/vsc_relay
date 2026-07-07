@@ -1,4 +1,5 @@
 use crate::auth::Auth;
+use crate::dedup::{self, PromptDedup};
 use crate::inject;
 use crate::permission::{self, Permissions};
 use crate::telegram::{esc_html, keyboard, Telegram};
@@ -32,7 +33,13 @@ pub fn new() -> Questions {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
-pub async fn start(q: Questions, perms: Permissions, tg: Arc<Telegram>, auth: Arc<Auth>) {
+pub async fn start(
+    q: Questions,
+    perms: Permissions,
+    tg: Arc<Telegram>,
+    auth: Arc<Auth>,
+    dedup: PromptDedup,
+) {
     let watched: Arc<Mutex<HashSet<u32>>> = Arc::new(Mutex::new(HashSet::new()));
     loop {
         for pid in relay_ipc::live_out_pids() {
@@ -46,6 +53,7 @@ pub async fn start(q: Questions, perms: Permissions, tg: Arc<Telegram>, auth: Ar
                     perms.clone(),
                     tg.clone(),
                     auth.clone(),
+                    dedup.clone(),
                     watched.clone(),
                 ));
             }
@@ -54,12 +62,14 @@ pub async fn start(q: Questions, perms: Permissions, tg: Arc<Telegram>, auth: Ar
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn reader(
     pid: u32,
     q: Questions,
     perms: Permissions,
     tg: Arc<Telegram>,
     auth: Arc<Auth>,
+    dedup: PromptDedup,
     watched: Arc<Mutex<HashSet<u32>>>,
 ) {
     if let Ok(conn) = relay_ipc::connect_async(&Endpoint::Out(pid)).await {
@@ -69,11 +79,16 @@ async fn reader(
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            handle_stream_line(pid, &v, &q, &perms, &tg, &auth).await;
+            handle_stream_line(pid, &v, &q, &perms, &tg, &auth, &dedup).await;
         }
     }
     watched.lock().await.remove(&pid);
     if let Some(p) = q.lock().await.remove(&pid) {
+        for (c, m) in dedup.forget(&p.tool_use_id).await {
+            let _ = tg
+                .edit_message_text(c, m, "session closed - question is no longer active", None)
+                .await;
+        }
         for (c, m) in p.cards {
             let _ = tg
                 .edit_message_text(c, m, "session closed - question is no longer active", None)
@@ -94,6 +109,7 @@ async fn reader(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_stream_line(
     pid: u32,
     v: &Value,
@@ -101,6 +117,7 @@ async fn handle_stream_line(
     perms: &Permissions,
     tg: &Arc<Telegram>,
     auth: &Arc<Auth>,
+    dedup: &PromptDedup,
 ) {
     let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
     if ty == "control_request" {
@@ -127,6 +144,9 @@ async fn handle_stream_line(
                     .and_then(|x| x.as_str())
                     .unwrap_or("")
                     .to_string();
+                for (c, m) in dedup.mark_received(&tool_use_id).await {
+                    let _ = tg.edit_message_text(c, m, dedup::COLLAPSE_NOTE, None).await;
+                }
                 let questions = req
                     .and_then(|r| r.get("input"))
                     .and_then(|i| i.get("questions"))
@@ -176,11 +196,16 @@ async fn handle_stream_line(
     let refs_tuid = {
         let map = q.lock().await;
         map.get(&pid)
-            .map(|p| !p.tool_use_id.is_empty() && line_refs(v, &p.tool_use_id))
+            .map(|p| !p.tool_use_id.is_empty() && dedup::refs_tool_use_id(v, &p.tool_use_id))
             .unwrap_or(false)
     };
     if refs_tuid && ty != "control_request" {
         if let Some(p) = q.lock().await.remove(&pid) {
+            for (c, m) in dedup.forget(&p.tool_use_id).await {
+                let _ = tg
+                    .edit_message_text(c, m, "answered in VS Code", None)
+                    .await;
+            }
             for (c, m) in p.cards {
                 let _ = tg
                     .edit_message_text(c, m, "answered in VS Code", None)
@@ -195,12 +220,6 @@ async fn handle_stream_line(
                 .await;
         }
     }
-}
-
-fn line_refs(v: &Value, tuid: &str) -> bool {
-    serde_json::to_string(v)
-        .map(|s| s.contains(tuid))
-        .unwrap_or(false)
 }
 
 fn session_alias(pid: u32) -> Option<String> {
