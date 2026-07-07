@@ -7,7 +7,7 @@ use relay_ipc::Endpoint;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::Mutex;
 use tracing::info;
@@ -20,6 +20,7 @@ pub struct Pending {
     pub cards: Vec<(i64, i64)>,
     pub alias: String,
     pub session_id: Option<String>,
+    pub started: Instant,
 }
 
 fn is_multi(qv: &Value) -> bool {
@@ -190,6 +191,7 @@ async fn handle_stream_line(
                     cards: Vec::new(),
                     alias,
                     session_id: inject::session_id_of(pid),
+                    started: Instant::now(),
                 };
                 let (text, kb) = render(pid, &pending);
                 for chat in auth.recipients().await {
@@ -197,6 +199,13 @@ async fn handle_stream_line(
                         pending.cards.push((chat, mid));
                     }
                 }
+                info!(
+                    target: "relay::trace",
+                    pipeline = "out", stage = "sent", kind = "question",
+                    corr = %pending.tool_use_id, pid, alias = %pending.alias,
+                    chats = pending.cards.len(),
+                    "question card sent"
+                );
                 q.lock().await.insert(pid, pending);
             } else {
                 let tool_use_id = req
@@ -232,6 +241,13 @@ async fn handle_stream_line(
     };
     if refs_tuid && ty != "control_request" {
         if let Some(p) = q.lock().await.remove(&pid) {
+            info!(
+                target: "relay::trace",
+                pipeline = "out", stage = "answered_vscode", kind = "question",
+                corr = %p.tool_use_id, pid, alias = %p.alias,
+                latency_ms = p.started.elapsed().as_millis() as u64,
+                "question answered in VS Code"
+            );
             for (c, m) in dedup.forget(&p.tool_use_id).await {
                 let _ = tg
                     .edit_message_text(c, m, "answered in VS Code", None)
@@ -405,11 +421,19 @@ pub async fn handle_submit(q: &Questions, pid: u32) -> Result<Vec<(i64, i64)>, S
         }
     });
     let cards = p.cards.clone();
+    let corr = p.tool_use_id.clone();
+    let latency_ms = p.started.elapsed().as_millis() as u64;
     let pid_c = pid;
     let res = tokio::task::spawn_blocking(move || inject::send_raw(pid_c, &response))
         .await
         .map_err(|e| e.to_string())?;
     res.map_err(|e| e.to_string())?;
+    info!(
+        target: "relay::trace",
+        pipeline = "out", stage = "resolved", kind = "question", direction = "to_vscode",
+        corr = %corr, pid, latency_ms, tabs = total,
+        "question answer injected to VS Code"
+    );
     map.remove(&pid);
     Ok(cards)
 }

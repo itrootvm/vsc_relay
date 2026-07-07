@@ -1562,6 +1562,36 @@ fn required_arg<'a>(args: &'a [String], index: usize, message: &str) -> anyhow::
     Ok(value)
 }
 
+fn sanitize_route(data: &str) -> String {
+    data.split(':')
+        .enumerate()
+        .map(|(i, tok)| {
+            if i < 2 || tok.chars().all(|c| c.is_ascii_digit()) {
+                tok
+            } else {
+                "·"
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::sanitize_route;
+
+    #[test]
+    fn keeps_verb_and_indices_redacts_ids() {
+        assert_eq!(sanitize_route("aq:p:5:2:0"), "aq:p:5:2:0");
+        assert_eq!(sanitize_route("aq:s:12345"), "aq:s:12345");
+        assert_eq!(sanitize_route("pm:a:9f3c-uuid-secret"), "pm:a:·");
+        assert_eq!(
+            sanitize_route("act:sayid:my-project:sid-uuid"),
+            "act:sayid:·:·"
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_callback(
     tg: &Telegram,
@@ -1582,6 +1612,12 @@ async fn handle_callback(
     let data = actions::decode(&data).unwrap_or(data);
     let chat = cq.message.as_ref().map(|m| m.chat.id);
     let msg_id = cq.message.as_ref().map(|m| m.message_id);
+    info!(
+        target: "relay::trace",
+        stage = "pressed", direction = "from_telegram",
+        route = %sanitize_route(&data), tg_chat = chat.unwrap_or(0), from = cq.from.id,
+        "telegram button pressed"
+    );
 
     if let Some(rest) = data.strip_prefix("aq:") {
         let parts: Vec<&str> = rest.split(':').collect();
