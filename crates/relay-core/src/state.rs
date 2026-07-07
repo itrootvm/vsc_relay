@@ -84,12 +84,21 @@ pub struct ClaudeReduction {
     pub open_tool_count: usize,
     pub pending_tool: Option<String>,
     pub pending_target: Option<String>,
+    pub last_turn_tokens: Option<TokenUsage>,
+    pub mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TokenUsage {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_creation: u64,
 }
 
 const CLAUDE_SIDECARS: &[&str] = &[
     "ai-title",
     "last-prompt",
-    "mode",
     "queue-operation",
     "file-history-snapshot",
     "summary",
@@ -133,6 +142,13 @@ pub fn reduce_claude(transcript: &str) -> ClaudeReduction {
             }
             continue;
         }
+        if ty == "mode" {
+            if let Some(m) = v.get("mode").and_then(|x| x.as_str()) {
+                let norm = if m == "normal" { "default" } else { m };
+                r.mode = Some(norm.to_string());
+            }
+            continue;
+        }
         if CLAUDE_SIDECARS.contains(&ty) || ty == "attachment" {
             continue;
         }
@@ -150,6 +166,20 @@ pub fn reduce_claude(transcript: &str) -> ClaudeReduction {
         match ty {
             "assistant" => {
                 let msg = v.get("message");
+                if let Some(u) = msg.and_then(|m| m.get("usage")) {
+                    r.last_turn_tokens = Some(TokenUsage {
+                        input: u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+                        output: u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+                        cache_read: u
+                            .get("cache_read_input_tokens")
+                            .and_then(|x| x.as_u64())
+                            .unwrap_or(0),
+                        cache_creation: u
+                            .get("cache_creation_input_tokens")
+                            .and_then(|x| x.as_u64())
+                            .unwrap_or(0),
+                    });
+                }
                 let stop = msg
                     .and_then(|m| m.get("stop_reason"))
                     .and_then(|s| s.as_str());
@@ -597,5 +627,29 @@ mod tests {
                 turn_id: "abc".into()
             }
         );
+    }
+
+    #[test]
+    fn claude_parses_mode_and_tokens() {
+        let t = concat!(
+            r#"{"type":"mode","mode":"normal"}"#,
+            "\n",
+            r#"{"type":"mode","mode":"acceptEdits"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":300,"cache_creation_input_tokens":40},"content":[{"type":"text","text":"hi"}]}}"#,
+        );
+        let r = reduce_claude(t);
+        assert_eq!(r.mode.as_deref(), Some("acceptEdits"));
+        let u = r.last_turn_tokens.expect("usage parsed");
+        assert_eq!(u.input, 100);
+        assert_eq!(u.output, 20);
+        assert_eq!(u.cache_read, 300);
+        assert_eq!(u.cache_creation, 40);
+    }
+
+    #[test]
+    fn claude_mode_normal_normalizes_to_default() {
+        let t = r#"{"type":"mode","mode":"normal"}"#;
+        assert_eq!(reduce_claude(t).mode.as_deref(), Some("default"));
     }
 }

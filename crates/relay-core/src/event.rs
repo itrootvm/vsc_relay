@@ -41,6 +41,11 @@ pub enum EventKind {
     SubagentActivity {
         count: u16,
     },
+    ModeChanged {
+        from: String,
+        to: String,
+        alert: bool,
+    },
     SessionEnded,
 }
 
@@ -54,17 +59,19 @@ impl EventKind {
             EventKind::AwaitingPermission { .. } => "awaiting_permission",
             EventKind::Error { .. } => "error",
             EventKind::SubagentActivity { .. } => "subagent_activity",
+            EventKind::ModeChanged { .. } => "mode_changed",
             EventKind::SessionEnded => "session_ended",
         }
     }
 
     pub fn actionable(&self) -> bool {
-        matches!(
-            self,
+        match self {
             EventKind::QuestionAsked { .. }
-                | EventKind::AwaitingPermission { .. }
-                | EventKind::Error { .. }
-        )
+            | EventKind::AwaitingPermission { .. }
+            | EventKind::Error { .. } => true,
+            EventKind::ModeChanged { alert, .. } => *alert,
+            _ => false,
+        }
     }
 
     fn normalized_text(&self) -> String {
@@ -95,6 +102,7 @@ impl EventKind {
                 ..
             } => last_message_excerpt.clone(),
             EventKind::StateChanged { from, to } => format!("{from}->{to}"),
+            EventKind::ModeChanged { from, to, .. } => format!("{from}->{to}"),
             EventKind::Error { message } => message.clone(),
             EventKind::SubagentActivity { count } => count.to_string(),
             EventKind::SessionStarted { entrypoint } => entrypoint.clone(),
