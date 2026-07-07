@@ -126,6 +126,7 @@ pub struct CodexAttach {
     pub agent: CodexAgent,
     pub last_message: Option<String>,
     pub last_duration_ms: Option<u64>,
+    pub usage: Option<relay_core::state::TokenUsage>,
 }
 
 fn build_attach(row: CodexThreadRow) -> CodexAttach {
@@ -137,6 +138,7 @@ fn build_attach(row: CodexThreadRow) -> CodexAttach {
             },
             last_agent_message: None,
             last_duration_ms: None,
+            last_turn_tokens: None,
         },
     };
     let agent = CodexAgent {
@@ -153,6 +155,7 @@ fn build_attach(row: CodexThreadRow) -> CodexAttach {
         agent,
         last_message: reduction.last_agent_message,
         last_duration_ms: reduction.last_duration_ms,
+        usage: reduction.last_turn_tokens,
     }
 }
 
