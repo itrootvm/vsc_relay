@@ -108,8 +108,11 @@ async fn decide_pretool(ctx: &IngressCtx, payload: &Value) -> Value {
         ("✅ Approve", format!("approve|{reqid}")),
         ("⛔ Deny", format!("deny|{reqid}")),
     ]]);
+    let mut cards: Vec<(i64, i64)> = Vec::new();
     for chat in &chats {
-        let _ = tg.send(*chat, &text, Some(kb.clone())).await;
+        if let Ok(mid) = tg.send(*chat, &text, Some(kb.clone())).await {
+            cards.push((*chat, mid));
+        }
     }
 
     info!(target: "relay::hook", tool = %tool, alias = %alias, reqid = %reqid,
@@ -118,6 +121,11 @@ async fn decide_pretool(ctx: &IngressCtx, payload: &Value) -> Value {
         Ok(Ok(dec)) => dec,
         _ => {
             ctx.pending.lock().await.remove(&reqid);
+            for (c, m) in cards {
+                let _ = tg
+                    .edit_message_text(c, m, "⏱ timed out - answer the prompt in VS Code", None)
+                    .await;
+            }
             warn!(target: "relay::hook", tool = %tool, alias = %alias, reqid = %reqid,
                 "no Telegram response; failing safe to ask (local prompt)");
             json!({ "decision": "ask", "reason": "no Telegram response" })

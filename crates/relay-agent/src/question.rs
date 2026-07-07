@@ -19,6 +19,7 @@ pub struct Pending {
     pub answers: HashMap<usize, Vec<String>>,
     pub cards: Vec<(i64, i64)>,
     pub alias: String,
+    pub session_id: Option<String>,
 }
 
 fn is_multi(qv: &Value) -> bool {
@@ -188,6 +189,7 @@ async fn handle_stream_line(
                     answers: HashMap::new(),
                     cards: Vec::new(),
                     alias,
+                    session_id: inject::session_id_of(pid),
                 };
                 let (text, kb) = render(pid, &pending);
                 for chat in auth.recipients().await {
@@ -361,6 +363,10 @@ pub async fn handle_submit(q: &Questions, pid: u32) -> Result<Vec<(i64, i64)>, S
     let p = map
         .get(&pid)
         .ok_or_else(|| "question is no longer active".to_string())?;
+    if !inject::session_stable(pid, &p.session_id) {
+        map.remove(&pid);
+        return Err("session changed - answer not sent".to_string());
+    }
     let empty = vec![];
     let qs = p.questions.as_array().unwrap_or(&empty);
     let total = qs.len();
