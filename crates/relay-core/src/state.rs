@@ -391,6 +391,7 @@ pub struct CodexReduction {
     pub state: CodexState,
     pub last_agent_message: Option<String>,
     pub last_duration_ms: Option<u64>,
+    pub last_turn_tokens: Option<TokenUsage>,
 }
 
 pub fn reduce_codex(rollout: &str) -> CodexReduction {
@@ -457,6 +458,19 @@ pub fn reduce_codex(rollout: &str) -> CodexReduction {
                     .unwrap_or("error")
                     .to_string();
                 state = CodexState::Error { message: m };
+            }
+            Some("token_count") => {
+                if let Some(u) = p.get("info").and_then(|i| i.get("last_token_usage")) {
+                    r.last_turn_tokens = Some(TokenUsage {
+                        input: u.get("input_tokens").and_then(value_u64).unwrap_or(0),
+                        output: u.get("output_tokens").and_then(value_u64).unwrap_or(0),
+                        cache_read: u
+                            .get("cached_input_tokens")
+                            .and_then(value_u64)
+                            .unwrap_or(0),
+                        cache_creation: 0,
+                    });
+                }
             }
             _ => {}
         }
@@ -589,6 +603,17 @@ mod tests {
         let r = reduce_codex(t);
         assert_eq!(r.state, CodexState::Idle);
         assert_eq!(r.last_duration_ms, Some(1200));
+    }
+
+    #[test]
+    fn codex_parses_token_count() {
+        let t = r#"{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":181164,"cached_input_tokens":180096,"output_tokens":649,"total_tokens":181813}}}}"#;
+        let r = reduce_codex(t);
+        let u = r.last_turn_tokens.expect("codex tokens parsed");
+        assert_eq!(u.input, 181164);
+        assert_eq!(u.output, 649);
+        assert_eq!(u.cache_read, 180096);
+        assert_eq!(u.cache_creation, 0);
     }
 
     #[test]

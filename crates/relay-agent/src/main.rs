@@ -609,7 +609,7 @@ async fn scan_and_emit(
                 agent: AgentKind::Codex,
                 session_ref: a.agent.thread_id.clone(),
                 title: Some(a.agent.title.clone()),
-                usage: None,
+                usage: a.usage,
                 mode: None,
             };
             let excerpt = a.last_message.clone().unwrap_or_default();
