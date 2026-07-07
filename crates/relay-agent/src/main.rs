@@ -919,39 +919,10 @@ fn format_event(machine: &str, alias: &str, e: &RelayEvent) -> (String, Option<s
 
     let agent = e.agent.as_str();
     let kb = match &e.kind {
-        EventKind::QuestionAsked { question } => {
-            let nav = vec![("👁 Focus".to_string(), format!("act:focus:{alias}"))];
-            let mut rows: Vec<Vec<(String, String)>> = Vec::new();
-            let multi_q = question.questions.len() > 1;
-            for (qi, q) in question.questions.iter().enumerate() {
-                let mut row: Vec<(String, String)> = Vec::new();
-                for (oi, o) in q.options.iter().enumerate() {
-                    let label = if multi_q {
-                        format!(
-                            "Q{}·{} {}",
-                            qi + 1,
-                            oi + 1,
-                            relay_core::state::truncate(&o.label, 14)
-                        )
-                    } else {
-                        format!("{}. {}", oi + 1, relay_core::state::truncate(&o.label, 20))
-                    };
-                    row.push((label, format!("act:qpick:{alias}:{qi}:{oi}")));
-                    if row.len() == 2 {
-                        rows.push(std::mem::take(&mut row));
-                    }
-                }
-                if !row.is_empty() {
-                    rows.push(row);
-                }
-            }
-            rows.push(vec![(
-                "⛔ Cancel".to_string(),
-                format!("act:stop:{alias}:{agent}"),
-            )]);
-            rows.push(nav);
-            Some(keyboard(rows))
-        }
+        EventKind::QuestionAsked { .. } => Some(keyboard(vec![vec![(
+            "👁 Open in VS Code to answer".to_string(),
+            format!("act:focus:{alias}"),
+        )]])),
         EventKind::AwaitingPermission { .. } => Some(keyboard(vec![
             vec![
                 ("✅ Yes / Approve".to_string(), format!("act:ok:{alias}")),
@@ -1466,28 +1437,6 @@ async fn say_text_sid(ctl: &Arc<dyn Control>, alias: &str, sid: &str, text: &str
         .to_string()
 }
 
-async fn pending_option_label(
-    registry: &Registry,
-    alias: &str,
-    qi: usize,
-    oi: usize,
-) -> Option<String> {
-    let windows = registry.read().await;
-    let w = windows
-        .iter()
-        .find(|w| workspace_alias(&w.workspace) == alias)?;
-    for c in &w.claude {
-        if let ClaudeState::PendingQuestion(q) = &c.state {
-            if let Some(question) = q.questions.get(qi) {
-                if let Some(opt) = question.options.get(oi) {
-                    return Some(opt.label.clone());
-                }
-            }
-        }
-    }
-    None
-}
-
 fn parse_chat_spec(spec: &str) -> Option<(String, AgentKind, usize)> {
     let parts: Vec<&str> = spec.split(':').collect();
     if parts.len() < 3 {
@@ -1849,24 +1798,6 @@ async fn handle_callback(
             ["stop", alias, agent] => run_ctl(ctl, "stop", vec!["", alias, agent]).await,
             ["ok", alias] => run_ctl(ctl, "accept", vec!["", alias]).await,
             ["pick", alias, oi] => run_ctl(ctl, "pick", vec!["", alias, oi]).await,
-            ["qpick", alias, qi, oi] => match (qi.parse::<usize>(), oi.parse::<usize>()) {
-                (Ok(q), Ok(o)) => match pending_option_label(registry, alias, q, o).await {
-                    Some(label) => {
-                        say_text(
-                            ctl,
-                            registry,
-                            alias,
-                            AgentKind::ClaudeCode,
-                            None,
-                            true,
-                            &label,
-                        )
-                        .await
-                    }
-                    None => "no pending question / option".to_string(),
-                },
-                _ => "bad option ref".to_string(),
-            },
             ["cont", alias, agent] => run_ctl(ctl, "cont", vec!["", alias, agent]).await,
             ["cont2", alias, idx] => match idx.parse::<usize>() {
                 Ok(i) => {
