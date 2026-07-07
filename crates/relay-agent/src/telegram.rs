@@ -57,16 +57,37 @@ impl Telegram {
 
     async fn call(&self, method: &str, body: Value) -> Result<Value> {
         let url = format!("https://api.telegram.org/bot{}/{}", self.token, method);
+        let req_bytes = serde_json::to_vec(&body).map(|v| v.len()).unwrap_or(0);
         let resp = self
             .http
             .post(&url)
             .json(&body)
             .send()
             .await
+            .map_err(|e| e.without_url())
             .with_context(|| format!("telegram {method}"))?;
-        let v: Value = resp.json().await.context("telegram json")?;
+        let status = resp.status().as_u16();
+        let raw = resp
+            .text()
+            .await
+            .map_err(|e| e.without_url())
+            .with_context(|| format!("telegram {method} body"))?;
+        tracing::debug!(
+            target: "relay::trace",
+            stage = "tg_call",
+            method,
+            req_bytes,
+            resp_bytes = raw.len(),
+            status
+        );
+        let v: Value =
+            serde_json::from_str(&raw).with_context(|| format!("telegram {method} json"))?;
         if v.get("ok").and_then(|x| x.as_bool()) != Some(true) {
-            bail!("telegram {method} error: {}", v);
+            let desc = v
+                .get("description")
+                .and_then(|x| x.as_str())
+                .unwrap_or("request failed");
+            bail!("telegram {method}: {desc}");
         }
         Ok(v.get("result").cloned().unwrap_or(Value::Null))
     }
