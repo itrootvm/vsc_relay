@@ -264,6 +264,7 @@ async fn main() -> anyhow::Result<()> {
         ));
         tokio::spawn(updates::watch(tg.clone(), auth.clone()));
         tokio::spawn(updates::marketplace_watch(tg.clone(), auth.clone()));
+        tokio::spawn(reshim_watch());
         tokio::spawn(untapped_watch(
             tg.clone(),
             auth.clone(),
@@ -331,6 +332,20 @@ fn hide_own_console() {
 #[cfg(not(windows))]
 fn hide_own_console() {}
 
+async fn reshim_watch() {
+    loop {
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        let st = shimctl::env_status();
+        if st.extension && !st.shim_installed {
+            match tokio::task::spawn_blocking(shimctl::install_shim).await {
+                Ok(Ok(msg)) => info!("reshim: {}", msg.replace('\n', "; ")),
+                Ok(Err(e)) => warn!("reshim skipped: {e}"),
+                Err(e) => warn!("reshim task join: {e}"),
+            }
+        }
+    }
+}
+
 async fn untapped_watch(tg: Arc<Telegram>, auth: Arc<auth::Auth>, machine: String) {
     use std::collections::HashSet;
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
@@ -339,14 +354,25 @@ async fn untapped_watch(tg: Arc<Telegram>, auth: Arc<auth::Auth>, machine: Strin
     let mut prev: HashSet<u32> = HashSet::new();
     loop {
         tokio::time::sleep(Duration::from_secs(45)).await;
-        let tapped: HashSet<u32> = relay_ipc::live_out_pids().into_iter().collect();
+        let mut tapped: HashSet<u32> = relay_ipc::live_out_pids().into_iter().collect();
         let live = live_session_pids(&sessions_dir);
-        let untapped: HashSet<u32> = live.difference(&tapped).copied().collect();
-        let fresh: Vec<u32> = untapped
+        let mut untapped: HashSet<u32> = live.difference(&tapped).copied().collect();
+        let mut fresh: Vec<u32> = untapped
             .intersection(&prev)
             .copied()
             .filter(|p| !warned.contains(p))
             .collect();
+        if !fresh.is_empty() {
+            let _ = tokio::task::spawn_blocking(shimctl::install_shim).await;
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            tapped = relay_ipc::live_out_pids().into_iter().collect();
+            untapped = live.difference(&tapped).copied().collect();
+            fresh = untapped
+                .intersection(&prev)
+                .copied()
+                .filter(|p| !warned.contains(p))
+                .collect();
+        }
         if !fresh.is_empty() {
             let mut aliases: Vec<String> = Vec::new();
             for p in &fresh {

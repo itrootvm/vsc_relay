@@ -58,7 +58,7 @@ pub fn env_status() -> EnvStatus {
     EnvStatus {
         vscode: vscode_present(),
         extension: !dirs.is_empty(),
-        shim_installed: dirs.iter().any(|d| is_installed(d)),
+        shim_installed: best.as_deref().map(is_installed).unwrap_or(false),
         version: best.as_deref().and_then(ext_version),
     }
 }
@@ -237,6 +237,8 @@ fn sweep_shim_temp(dir: &Path) {
 }
 
 pub fn install_shim() -> Result<String> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dirs = ext_native_dirs();
     if dirs.is_empty() {
         bail!("Claude Code extension native-binary directory not found");
