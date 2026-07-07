@@ -73,16 +73,36 @@ async fn reader(
     watched: Arc<Mutex<HashSet<u32>>>,
 ) {
     if let Ok(conn) = relay_ipc::connect_async(&Endpoint::Out(pid)).await {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+        let proc = {
+            let (q, perms, tg, auth, dedup) = (
+                q.clone(),
+                perms.clone(),
+                tg.clone(),
+                auth.clone(),
+                dedup.clone(),
+            );
+            tokio::spawn(async move {
+                while let Some(v) = rx.recv().await {
+                    handle_stream_line(pid, &v, &q, &perms, &tg, &auth, &dedup).await;
+                }
+            })
+        };
         let mut lines = BufReader::new(conn).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let v: Value = match serde_json::from_str(&line) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            handle_stream_line(pid, &v, &q, &perms, &tg, &auth, &dedup).await;
+            if let Ok(v) = serde_json::from_str::<Value>(&line) {
+                if tx.send(v).is_err() {
+                    break;
+                }
+            }
         }
+        drop(tx);
+        let _ = proc.await;
     }
     watched.lock().await.remove(&pid);
+    if inject::pid_alive(pid) {
+        return;
+    }
     if let Some(p) = q.lock().await.remove(&pid) {
         for (c, m) in dedup.forget(&p.tool_use_id).await {
             let _ = tg
@@ -146,6 +166,15 @@ async fn handle_stream_line(
                     .to_string();
                 for (c, m) in dedup.mark_received(&tool_use_id).await {
                     let _ = tg.edit_message_text(c, m, dedup::COLLAPSE_NOTE, None).await;
+                }
+                let already_live = q
+                    .lock()
+                    .await
+                    .get(&pid)
+                    .map(|p| p.request_id == request_id)
+                    .unwrap_or(false);
+                if already_live {
+                    return;
                 }
                 let questions = req
                     .and_then(|r| r.get("input"))

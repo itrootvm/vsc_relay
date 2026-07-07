@@ -1,15 +1,126 @@
 use relay_ipc::{BlockingConn, BlockingListener, Endpoint};
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 enum Msg {
     Data(Vec<u8>),
     Close,
+}
+
+const READER_CHAN_CAP: usize = 2048;
+const RING_CAP: usize = 64;
+const RING_TTL: Duration = Duration::from_secs(10 * 60);
+
+type Shared = Arc<Vec<u8>>;
+
+struct RingEntry {
+    request_id: String,
+    tool_use_id: String,
+    line: Shared,
+    at: Instant,
+}
+
+struct Hub {
+    readers: Vec<SyncSender<Shared>>,
+    ring: VecDeque<RingEntry>,
+}
+
+impl Hub {
+    fn new() -> Arc<Mutex<Hub>> {
+        Arc::new(Mutex::new(Hub {
+            readers: Vec::new(),
+            ring: VecDeque::new(),
+        }))
+    }
+
+    fn register(&mut self) -> (Receiver<Shared>, Vec<Shared>) {
+        let (tx, rx) = mpsc::sync_channel::<Shared>(READER_CHAN_CAP);
+        self.readers.push(tx);
+        let backlog = self.ring.iter().map(|e| e.line.clone()).collect();
+        (rx, backlog)
+    }
+
+    fn broadcast(&mut self, line: &Shared) {
+        self.readers
+            .retain(|tx| matches!(tx.try_send(line.clone()), Ok(())));
+    }
+
+    fn note_request(&mut self, line: &Shared) {
+        if let Some((request_id, tool_use_id)) = parse_can_use_tool(line) {
+            self.ring.push_back(RingEntry {
+                request_id,
+                tool_use_id,
+                line: line.clone(),
+                at: Instant::now(),
+            });
+            while self.ring.len() > RING_CAP {
+                self.ring.pop_front();
+            }
+        }
+    }
+
+    fn evict_request(&mut self, request_id: &str) {
+        self.ring.retain(|e| e.request_id != request_id);
+    }
+
+    fn note_stdout(&mut self, line: &[u8], now: Instant) {
+        if self.ring.is_empty() {
+            return;
+        }
+        self.ring.retain(|e| {
+            now.duration_since(e.at) < RING_TTL && !line_contains(line, e.tool_use_id.as_bytes())
+        });
+    }
+}
+
+fn line_contains(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+fn parse_can_use_tool(line: &[u8]) -> Option<(String, String)> {
+    if !line_contains(line, b"control_request") || !line_contains(line, b"can_use_tool") {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_slice(line).ok()?;
+    if v.get("type").and_then(|t| t.as_str()) != Some("control_request") {
+        return None;
+    }
+    let req = v.get("request")?;
+    if req.get("subtype").and_then(|s| s.as_str()) != Some("can_use_tool") {
+        return None;
+    }
+    let request_id = v.get("request_id").and_then(|x| x.as_str())?.to_string();
+    if request_id.is_empty() {
+        return None;
+    }
+    let tool_use_id = req
+        .get("tool_use_id")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    Some((request_id, tool_use_id))
+}
+
+fn serve_reader(mut conn: BlockingConn, rx: Receiver<Shared>, backlog: Vec<Shared>) {
+    for line in backlog {
+        if conn.write_all(&line).and_then(|_| conn.flush()).is_err() {
+            return;
+        }
+    }
+    while let Ok(line) = rx.recv() {
+        if conn.write_all(&line).and_then(|_| conn.flush()).is_err() {
+            return;
+        }
+    }
 }
 
 fn cancel_enabled() -> bool {
@@ -219,9 +330,9 @@ fn main() {
         None => fallback_exec(&real, &arg0, &rest),
     };
 
-    let readers: Arc<Mutex<Vec<BlockingConn>>> = Arc::new(Mutex::new(Vec::new()));
+    let hub = Hub::new();
     if let Ok(mut listener) = BlockingListener::bind(&Endpoint::Out(child_pid)) {
-        let readers_l = readers.clone();
+        let hub_l = hub.clone();
         std::thread::spawn(move || loop {
             let conn = match listener.accept() {
                 Ok(conn) => conn,
@@ -230,14 +341,16 @@ fn main() {
                     continue;
                 }
             };
-            if let Ok(mut rs) = readers_l.lock() {
-                rs.push(conn);
-            }
+            let (rx, backlog) = match hub_l.lock() {
+                Ok(mut h) => h.register(),
+                Err(_) => continue,
+            };
+            std::thread::spawn(move || serve_reader(conn, rx, backlog));
         });
     }
     let ext_out: Arc<Mutex<std::io::Stdout>> = Arc::new(Mutex::new(std::io::stdout()));
 
-    let readers_pump = readers.clone();
+    let hub_pump = hub.clone();
     let ext_out_pump = ext_out.clone();
     std::thread::spawn(move || {
         let mut r = BufReader::new(child_stdout);
@@ -247,9 +360,6 @@ fn main() {
             match r.read_until(b'\n', &mut line) {
                 Ok(0) => break,
                 Ok(_) => {
-                    if let Ok(mut rs) = readers_pump.lock() {
-                        rs.retain_mut(|s| s.write_all(&line).and_then(|_| s.flush()).is_ok());
-                    }
                     match ext_out_pump.lock() {
                         Ok(mut o) => {
                             if o.write_all(&line).is_err() {
@@ -258,6 +368,12 @@ fn main() {
                             let _ = o.flush();
                         }
                         Err(_) => break,
+                    }
+                    let shared: Shared = Arc::new(line.clone());
+                    if let Ok(mut h) = hub_pump.lock() {
+                        h.note_stdout(&line, Instant::now());
+                        h.note_request(&shared);
+                        h.broadcast(&shared);
                     }
                 }
                 Err(_) => break,
@@ -285,6 +401,7 @@ fn main() {
     if let Ok(mut listener) = BlockingListener::bind(&Endpoint::Inject(child_pid)) {
         let tx_inj = tx.clone();
         let ext_out_inj = ext_out.clone();
+        let hub_inj = hub.clone();
         std::thread::spawn(move || loop {
             let conn = match listener.accept() {
                 Ok(conn) => conn,
@@ -295,6 +412,7 @@ fn main() {
             };
             let tx_c = tx_inj.clone();
             let eo = ext_out_inj.clone();
+            let hub_c = hub_inj.clone();
             std::thread::spawn(move || {
                 let mut r = BufReader::new(conn);
                 let mut line = Vec::new();
@@ -308,6 +426,11 @@ fn main() {
                             } else {
                                 None
                             };
+                            if let Some(id) = &cancel {
+                                if let Ok(mut h) = hub_c.lock() {
+                                    h.evict_request(id);
+                                }
+                            }
                             let mut out = line.clone();
                             if out.last() != Some(&b'\n') {
                                 out.push(b'\n');
@@ -385,5 +508,93 @@ fn drain<R: Read>(mut r: R) {
         if n == 0 {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hub() -> Hub {
+        Hub {
+            readers: Vec::new(),
+            ring: VecDeque::new(),
+        }
+    }
+
+    fn share(s: &str) -> Shared {
+        Arc::new(s.as_bytes().to_vec())
+    }
+
+    #[test]
+    fn parses_can_use_tool() {
+        let line = br#"{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"tu-1","input":{}}}"#;
+        assert_eq!(
+            parse_can_use_tool(line),
+            Some(("req-1".to_string(), "tu-1".to_string()))
+        );
+    }
+
+    #[test]
+    fn ignores_non_can_use_tool() {
+        let init =
+            br#"{"type":"control_request","request_id":"r","request":{"subtype":"initialize"}}"#;
+        assert_eq!(parse_can_use_tool(init), None);
+        let asst = br#"{"type":"assistant","message":{"content":[]}}"#;
+        assert_eq!(parse_can_use_tool(asst), None);
+    }
+
+    #[test]
+    fn ring_holds_and_evicts_by_request_id() {
+        let mut h = hub();
+        h.note_request(&share(
+            r#"{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"tu-1"}}"#,
+        ));
+        assert_eq!(h.ring.len(), 1);
+        h.evict_request("req-1");
+        assert_eq!(h.ring.len(), 0);
+    }
+
+    #[test]
+    fn stdout_referencing_tool_use_id_evicts() {
+        let mut h = hub();
+        h.note_request(&share(
+            r#"{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"tu-1"}}"#,
+        ));
+        h.note_stdout(
+            br#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu-1"}]}}"#,
+            Instant::now(),
+        );
+        assert_eq!(h.ring.len(), 0);
+    }
+
+    #[test]
+    fn new_reader_gets_ring_backlog() {
+        let mut h = hub();
+        h.note_request(&share(
+            r#"{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"tu-1"}}"#,
+        ));
+        let (_rx, backlog) = h.register();
+        assert_eq!(backlog.len(), 1);
+    }
+
+    #[test]
+    fn broadcast_drops_disconnected_reader() {
+        let mut h = hub();
+        let (rx, _backlog) = h.register();
+        assert_eq!(h.readers.len(), 1);
+        drop(rx);
+        h.broadcast(&share("line\n"));
+        assert_eq!(h.readers.len(), 0);
+    }
+
+    #[test]
+    fn broadcast_drops_full_reader() {
+        let mut h = hub();
+        let (_rx, _backlog) = h.register();
+        for _ in 0..(READER_CHAN_CAP + 2) {
+            h.broadcast(&share("x\n"));
+        }
+        assert_eq!(h.readers.len(), 0);
     }
 }
