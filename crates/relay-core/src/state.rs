@@ -21,6 +21,8 @@ pub struct Question {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AskUserQuestion {
     pub questions: Vec<Question>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -284,10 +286,11 @@ pub fn reduce_claude(transcript: &str) -> ClaudeReduction {
         r.pending_target = t.target.clone();
     }
 
-    r.state = if let Some((_, q)) = open.iter().find(|(_, t)| t.name == "AskUserQuestion") {
+    r.state = if let Some((id, q)) = open.iter().find(|(_, t)| t.name == "AskUserQuestion") {
         match &q.questions {
             Some(qs) if !qs.is_empty() => ClaudeState::PendingQuestion(AskUserQuestion {
                 questions: qs.clone(),
+                tool_use_id: Some(id.clone()),
             }),
             _ => ClaudeState::Working {
                 open_tools: open_tool_count(open.len()),
@@ -538,6 +541,7 @@ mod tests {
             ClaudeState::PendingQuestion(q) => {
                 assert_eq!(q.questions.len(), 1);
                 assert_eq!(q.questions[0].options.len(), 2);
+                assert_eq!(q.tool_use_id.as_deref(), Some("q1"));
             }
             other => panic!("expected pending question, got {other:?}"),
         }

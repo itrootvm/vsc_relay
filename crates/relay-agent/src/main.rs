@@ -2,6 +2,7 @@ mod actions;
 mod auth;
 mod config;
 mod control_cli;
+mod dedup;
 mod fsutil;
 mod hooks;
 mod hostname;
@@ -212,9 +213,11 @@ async fn main() -> anyhow::Result<()> {
                 .await;
         }
 
+        let dedup = dedup::PromptDedup::new();
         let forwarder = {
             let tg = tg.clone();
             let auth = auth.clone();
+            let dedup = dedup.clone();
             tokio::spawn(async move {
                 while let Some(em) = rx.recv().await {
                     info!("relay-event {} {}", em.event.kind.tag(), em.alias);
@@ -238,6 +241,36 @@ async fn main() -> anyhow::Result<()> {
                     }
                     let (text, kb) = format_event(&em.machine, &em.alias, &em.event);
                     let silent = !em.event.actionable;
+                    if let EventKind::QuestionAsked { question } = &em.event.kind {
+                        if let Some(tuid) = question.tool_use_id.clone() {
+                            if dedup.out_owns(&tuid).await {
+                                info!(
+                                    target: "relay::trace",
+                                    pipeline = "disk",
+                                    stage = "suppressed",
+                                    kind = "question_asked",
+                                    alias = %em.alias,
+                                    "out-socket owns question; disk card suppressed"
+                                );
+                                continue;
+                            }
+                            let mut cards: Vec<(i64, i64)> = Vec::new();
+                            for chat in auth.recipients().await {
+                                match tg.send_ex(chat, &text, kb.clone(), silent).await {
+                                    Ok(mid) => cards.push((chat, mid)),
+                                    Err(e) => warn!("send notify failed: {e}"),
+                                }
+                            }
+                            if let Some(stale) = dedup.register_disk(&tuid, cards).await {
+                                for (c, m) in stale {
+                                    let _ = tg
+                                        .edit_message_text(c, m, dedup::COLLAPSE_NOTE, None)
+                                        .await;
+                                }
+                            }
+                            continue;
+                        }
+                    }
                     for chat in auth.recipients().await {
                         if let Err(e) = tg.send_ex(chat, &text, kb.clone(), silent).await {
                             warn!("send notify failed: {e}");
@@ -261,6 +294,7 @@ async fn main() -> anyhow::Result<()> {
             perms.clone(),
             tg.clone(),
             auth.clone(),
+            dedup.clone(),
         ));
         tokio::spawn(updates::watch(tg.clone(), auth.clone()));
         tokio::spawn(updates::marketplace_watch(tg.clone(), auth.clone()));
