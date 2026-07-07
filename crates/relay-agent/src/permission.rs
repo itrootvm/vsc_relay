@@ -4,6 +4,7 @@ use crate::{actions, inject};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
@@ -16,6 +17,7 @@ pub struct PermPending {
     pub cards: Vec<(i64, i64)>,
     pub alias: String,
     pub session_id: Option<String>,
+    pub started: Instant,
 }
 
 pub type Permissions = Arc<Mutex<HashMap<String, PermPending>>>;
@@ -52,6 +54,7 @@ pub async fn on_request(
         cards: Vec::new(),
         alias,
         session_id: inject::session_id_of(pid),
+        started: Instant::now(),
     };
     let (text, kb) = render(&p);
     for chat in auth.recipients().await {
@@ -65,6 +68,13 @@ pub async fn on_request(
     } else {
         info!(target: "relay::perm", pid, tool = %p.tool_name, request_id = %request_id,
             chats = p.cards.len(), "permission card sent");
+        info!(
+            target: "relay::trace",
+            pipeline = "out", stage = "sent", kind = "permission",
+            corr = %p.tool_use_id, pid, alias = %p.alias, tool = %p.tool_name,
+            chats = p.cards.len(),
+            "permission card sent"
+        );
     }
     perms.lock().await.insert(request_id, p);
 }
@@ -134,6 +144,13 @@ pub async fn resolve(
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
+    info!(
+        target: "relay::trace",
+        pipeline = "out", stage = "resolved", kind = "permission", direction = "to_vscode",
+        corr = %p.tool_use_id, pid, allow, tool = %p.tool_name,
+        latency_ms = p.started.elapsed().as_millis() as u64,
+        "permission decision injected to VS Code"
+    );
     Ok(p.cards)
 }
 
