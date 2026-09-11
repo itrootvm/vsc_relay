@@ -110,7 +110,10 @@ fn train_local_semantic_bundle(
     output: &str,
     base: Option<&str>,
 ) -> anyhow::Result<()> {
-    const TRAINER: &[u8] = include_bytes!("../../relay-semantic/scripts/train_nli_bundle.py");
+    static TRAINER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/train_nli_bundle.py"));
+    if TRAINER.is_empty() {
+        bail!("this build does not include the local semantic trainer");
+    }
     let mut command = std::process::Command::new("python3");
     command
         .arg("-")
