@@ -424,6 +424,32 @@ leaves the machine when you pick one of those. `automation smart install-local` 
 `automation smart train-local` only matter for macOS and Windows builds; on Linux nothing can
 run the model they produce.
 
+## The Log Says The fs Watcher Is Unavailable (Linux)
+
+```
+WARN fs watcher unavailable; falling back to polling every 15s
+```
+
+Nothing is broken: the relay could not open an inotify instance, so it scans on a timer instead
+of reacting to writes. Sessions and turns are still picked up, just up to the poll interval
+later. The cause is almost always the per-user inotify instance limit, which editors and CLI
+agents spend quickly:
+
+```bash
+cat /proc/sys/fs/inotify/max_user_instances
+find /proc/*/fd -lname anon_inode:inotify 2>/dev/null | wc -l
+```
+
+If the second number is at or above the first, raise the limit:
+
+```bash
+echo 'fs.inotify.max_user_instances=512' | sudo tee /etc/sysctl.d/90-inotify.conf
+sudo sysctl --system
+```
+
+Restart the relay afterwards. A machine that runs several VS Code windows alongside Codex or
+Cursor will hit the default of 128 routinely.
+
 ## The Shim Looks Broken
 
 On macOS and Linux:

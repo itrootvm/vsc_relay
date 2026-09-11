@@ -612,6 +612,11 @@ async fn main() -> anyhow::Result<()> {
             let (fs_tx, mut fs_rx) = mpsc::unbounded_channel::<()>();
             let _watcher = spawn_watcher(&paths, fs_tx);
             if _watcher.is_none() {
+                #[cfg(target_os = "linux")]
+                warn!(
+                    "fs watcher unavailable; falling back to polling every {fallback}s (on Linux this is usually the per-user inotify limit, spent by editors and CLI agents; raise fs.inotify.max_user_instances to fix it)"
+                );
+                #[cfg(not(target_os = "linux"))]
                 warn!("fs watcher unavailable; falling back to polling every {fallback}s");
             }
             loop {
