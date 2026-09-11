@@ -27,9 +27,6 @@ install_job() {
   <array><string>$BIN</string></array>
   <key>WorkingDirectory</key><string>$PWD</string>
   <key>RunAtLoad</key><true/>
-  <!-- Restart a crash, but not a clean exit. A copy that finds another
-       agent holding the machine lock exits 0 on purpose; KeepAlive=true
-       turned that into a permanent restart loop every ThrottleInterval. -->
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ThrottleInterval</key><integer>10</integer>
   <key>ProcessType</key><string>Interactive</string>

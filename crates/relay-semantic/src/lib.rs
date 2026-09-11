@@ -2,12 +2,16 @@ pub mod annotation;
 mod cli;
 pub mod config;
 pub mod install;
-#[cfg(not(target_env = "musl"))]
+#[cfg(not(target_os = "linux"))]
 mod local;
-#[cfg(target_env = "musl")]
+#[cfg(target_os = "linux")]
 #[path = "local_unavailable.rs"]
 mod local;
 mod remote;
+
+pub const fn local_backend_available() -> bool {
+    !cfg!(target_os = "linux")
+}
 
 use anyhow::{bail, Context, Result};
 use config::{SemanticBackend, SemanticConfig};
@@ -23,10 +27,7 @@ pub async fn classify(
     }
     match config.backend {
         SemanticBackend::Off => Ok(Vec::new()),
-        SemanticBackend::Local => {
-            let config = config.clone();
-            tokio::task::spawn_blocking(move || local::classify(&config, &frames)).await?
-        }
+        SemanticBackend::Local => classify_local(config, frames).await,
         SemanticBackend::Ollama | SemanticBackend::OpenAiCompatible => {
             remote::classify(config, &frames, api_key.as_deref()).await
         }
@@ -46,18 +47,7 @@ pub async fn check(config: &SemanticConfig, api_key: Option<String>) -> Result<S
     };
     match config.backend {
         SemanticBackend::Off => Ok("semantic backend off".to_string()),
-        SemanticBackend::Local => {
-            let config = config.clone();
-            tokio::task::spawn_blocking(move || {
-                let status = local::status(&config)?;
-                let facts = local::classify(&config, &[probe()])?;
-                if facts.len() != 1 {
-                    bail!("local semantic inference probe returned no aligned fact frame");
-                }
-                Ok(format!("{status}; inference probe ok"))
-            })
-            .await?
-        }
+        SemanticBackend::Local => check_local(config).await,
         SemanticBackend::Ollama | SemanticBackend::OpenAiCompatible => {
             if config.model.trim().is_empty() {
                 bail!("semantic model is not configured");
@@ -84,5 +74,38 @@ pub async fn check(config: &SemanticConfig, api_key: Option<String>) -> Result<S
                 "ready: agent_cli={cli} (CLI confidence is uncalibrated)"
             ))
         }
+    }
+}
+
+async fn classify_local(
+    config: &SemanticConfig,
+    frames: Vec<SemanticInputFrame>,
+) -> Result<Vec<SemanticFacts>> {
+    let config = config.clone();
+    tokio::task::spawn_blocking(move || local::classify(&config, &frames)).await?
+}
+
+async fn check_local(config: &SemanticConfig) -> Result<String> {
+    let config = config.clone();
+    tokio::task::spawn_blocking(move || {
+        let status = local::status(&config)?;
+        let facts = local::classify(&config, &[local_probe()])?;
+        if facts.len() != 1 {
+            bail!("local semantic inference probe returned no aligned fact frame");
+        }
+        Ok(format!("{status}; inference probe ok"))
+    })
+    .await?
+}
+
+fn local_probe() -> SemanticInputFrame {
+    SemanticInputFrame {
+        episode: 0,
+        goal: "Fix the requested defect".to_string(),
+        user_contract: "Fix it and verify the result".to_string(),
+        assistant: "I am still investigating; this is not complete.".to_string(),
+        tools: Vec::new(),
+        runtime: Vec::new(),
+        runtime_error: false,
     }
 }

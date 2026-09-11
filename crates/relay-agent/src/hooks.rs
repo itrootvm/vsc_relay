@@ -298,7 +298,41 @@ const DEFAULT_DANGER: &[&str] = &[
     "terraform destroy",
     "mkfs",
     "dd if=",
+    "dd of=",
     " > /dev/sd",
+    ">/dev/sd",
+    " > /dev/nvme",
+    ">/dev/nvme",
+    " > /dev/vd",
+    ">/dev/vd",
+    " > /dev/xvd",
+    ">/dev/xvd",
+    "tee /dev/sd",
+    "tee /dev/nvme",
+    "tee /dev/vd",
+    "tee /dev/xvd",
+    "wipefs",
+    "shred ",
+    "sgdisk",
+    "lvremove",
+    "vgremove",
+    "pvremove",
+    "userdel",
+    "groupdel",
+    "apt purge",
+    "apt-get purge",
+    "dnf remove",
+    "yum remove",
+    "zypper remove",
+    "pacman -r",
+    "apk del",
+    "snap remove",
+    "flatpak uninstall",
+    "docker system prune",
+    "docker volume rm",
+    "docker rm -f",
+    "nft flush ruleset",
+    ":(){",
     "del /f",
     "del /q",
     "rd /s",
@@ -378,6 +412,47 @@ mod danger_tests {
             assert!(
                 is_destructive(&Some(destructive.to_string())),
                 "must stay dangerous: {destructive}"
+            );
+        }
+    }
+
+    #[test]
+    fn linux_disk_and_package_destruction_is_caught() {
+        for destructive in [
+            "cat /dev/urandom >/dev/sda",
+            "dd if=/dev/zero of=/dev/nvme0n1 bs=1M",
+            "cat image.img | sudo tee /dev/nvme0n1",
+            "wipefs -a /dev/vda",
+            "shred -n 3 -z /dev/xvdb",
+            "sudo lvremove -f vg0/data",
+            "sudo userdel -r deploy",
+            "sudo apt purge --autoremove postgresql",
+            "sudo pacman -Rns base-devel",
+            "docker system prune -af --volumes",
+            "sudo nft flush ruleset",
+        ] {
+            assert!(
+                is_destructive(&Some(destructive.to_string())),
+                "must be dangerous on Linux: {destructive}"
+            );
+        }
+    }
+
+    #[test]
+    fn everyday_linux_commands_are_not_destruction() {
+        for harmless in [
+            "cargo build --release > /dev/null 2>&1",
+            "ls -l /dev/sda",
+            "lsblk -o NAME,SIZE /dev/nvme0n1",
+            "systemctl --user status vsc-relay",
+            "apt list --installed | grep xdotool",
+            "docker ps -a",
+            "dd --help",
+        ] {
+            assert_eq!(
+                verdict(harmless),
+                None,
+                "held for approval with nothing destructive in it: {harmless}"
             );
         }
     }

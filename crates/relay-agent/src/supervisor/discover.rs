@@ -72,9 +72,66 @@ fn find_in_paths(path_var: &std::ffi::OsStr, name: &str) -> Option<PathBuf> {
     None
 }
 
-fn which_bin(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    find_in_paths(&path, name)
+fn newest_node_bin(home: &std::path::Path) -> Option<PathBuf> {
+    let versions = home.join(".nvm").join("versions").join("node");
+    let mut best: Option<(String, PathBuf)> = None;
+    for entry in std::fs::read_dir(versions).ok()?.flatten() {
+        let bin = entry.path().join("bin");
+        if !bin.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        match &best {
+            Some((seen, _)) if seen.as_str() >= name.as_str() => {}
+            _ => best = Some((name, bin)),
+        }
+    }
+    best.map(|(_, bin)| bin)
+}
+
+pub(crate) fn bin_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+
+    if let Some(home) = dirs::home_dir() {
+        for relative in [
+            ".local/bin",
+            "bin",
+            ".npm-global/bin",
+            ".volta/bin",
+            ".bun/bin",
+            ".deno/bin",
+            ".cargo/bin",
+            ".yarn/bin",
+        ] {
+            dirs.push(home.join(relative));
+        }
+        if let Some(node) = newest_node_bin(&home) {
+            dirs.push(node);
+        }
+    }
+    if let Some(prefix) = std::env::var_os("NPM_CONFIG_PREFIX") {
+        dirs.push(PathBuf::from(prefix).join("bin"));
+    }
+    for fixed in ["/usr/local/bin", "/opt/homebrew/bin", "/snap/bin"] {
+        dirs.push(PathBuf::from(fixed));
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|dir| !dir.as_os_str().is_empty() && seen.insert(dir.clone()));
+    dirs
+}
+
+pub(crate) fn path_env() -> std::ffi::OsString {
+    std::env::join_paths(bin_dirs()).unwrap_or_else(|_| {
+        std::env::var_os("PATH").unwrap_or_else(|| std::ffi::OsString::from("/usr/bin:/bin"))
+    })
+}
+
+pub(crate) fn which_bin(name: &str) -> Option<PathBuf> {
+    let joined = std::env::join_paths(bin_dirs()).ok()?;
+    find_in_paths(&joined, name)
 }
 
 fn home_dir() -> PathBuf {

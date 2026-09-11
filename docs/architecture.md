@@ -139,17 +139,28 @@ answers with `codex login status`, Cursor with `cursor-agent status`, Antigravit
 `agy models`, which only lists anything when credentials are present. Claude Code has no
 headless equivalent, so nothing is claimed about it.
 
-The CLI launch is macOS only for now: it writes the prompt to a file and opens Terminal on a
-generated launcher script, so no shell quoting can corrupt a multi-line prompt. The script
-closes its own window when the agent exits cleanly and keeps it open with the exit status when
-it does not, so a working handoff leaves nothing behind and a failed one stays readable.
+The CLI launch writes the prompt to a file and opens a terminal on a generated launcher script,
+so no shell quoting can corrupt a multi-line prompt. The script closes its own window when the
+agent exits cleanly and keeps it open with the exit status when it does not, so a working
+handoff leaves nothing behind and a failed one stays readable. macOS opens Terminal and closes
+the window with AppleScript. Linux takes the first emulator it finds on `PATH`, from
+`x-terminal-emulator` through `gnome-terminal`, `konsole`, `alacritty`, `kitty`, `foot` and a
+dozen more, ending at `xterm`; the window closes by the script exiting and a failure holds it
+open until a key is pressed. With no `DISPLAY` or `WAYLAND_DISPLAY` the launch fails with the
+path of the script, so it can still be run by hand.
+
+Editors are found the same way per platform: macOS looks for the `.app` bundle, everywhere else
+the editor is resolved on `PATH` (`code`, `code-insiders`, `code-oss`, `codium`, `vscodium`,
+`cursor`, `windsurf`, `antigravity`). Because the daemon can run under a systemd user unit whose
+`PATH` is minimal, the lookup also covers the usual per-user install directories and the newest
+nvm node, and that `PATH` is passed to whatever it starts.
 
 The brief is written as `HANDOFF.md` at the root of the receiving workspace; any earlier brief
 there is rotated to `HANDOFF.prev.md`. Both are gitignored, since a brief is a local working
 artifact.
 
-The same flow is available in the macOS app, under Hand off in the session detail pane, and
-from the terminal, which is also how it is tested. Each command takes `--json` for callers:
+The same flow is available in the desktop app, under Hand off on a session, and from the
+terminal, which is also how it is tested. Each command takes `--json` for callers:
 
 ```bash
 vsc-relay-agent handoff destinations SESSION_ID
@@ -160,8 +171,6 @@ vsc-relay-agent handoff receipt /path/to/workspace
 
 `handoff SESSION_ID /path/to/workspace` still writes a brief into an arbitrary folder, for the
 case where the work really is moving to a different project.
-
-The Linux `relay-gui` does not surface handoff yet; there it is Telegram or the command line.
 
 The receiving agent closes the loop. Before it changes any code it is asked to append a
 receipt between fixed markers in the same file: the contract restated in its own words, what

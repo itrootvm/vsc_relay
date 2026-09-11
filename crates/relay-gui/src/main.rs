@@ -2,7 +2,7 @@
 
 use eframe::egui;
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 const APP_TITLE: &str = "VS Code Agent Relay";
 const RELEASES_URL: &str = "https://github.com/itrootvm/vsc_relay/releases/latest";
 const LOG_CAP: usize = 1000;
+const LOG_TAIL_BYTES: u64 = 64 * 1024;
+const LOG_TAIL_POLL: Duration = Duration::from_millis(600);
 const ENV_KEYS: &[&str] = &[
     "TELEGRAM_BOT_TOKEN",
     "RELAY_PAIR_SECRET",
@@ -20,6 +22,14 @@ const ENV_KEYS: &[&str] = &[
     "RELAY_CODEX_MAX_AGE_H",
     "VSC_RELAY_AUTO_UPDATE",
 ];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SessionFilter {
+    All,
+    Active,
+    Attention,
+    Robot,
+}
 
 enum UpdateEvent {
     Available(String),
@@ -42,8 +52,9 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(APP_TITLE)
-            .with_inner_size([760.0, 580.0])
-            .with_min_inner_size([560.0, 420.0]),
+            .with_app_id("vsc-relay")
+            .with_inner_size([1000.0, 700.0])
+            .with_min_inner_size([760.0, 520.0]),
         ..Default::default()
     };
     eframe::run_native(
@@ -129,6 +140,24 @@ struct RelayApp {
     last_env: Instant,
     last_stats: Instant,
     last_update_check: Instant,
+
+    review_on: bool,
+    review_steer: bool,
+    review_cross_family: bool,
+    review_depth: String,
+    review_every: i64,
+    review_reviewers: Vec<String>,
+    review_output: String,
+
+    handoff_session: Option<String>,
+    handoff_destinations: Vec<HandoffDest>,
+    handoff_output: String,
+
+    session_filter: SessionFilter,
+    session_search: String,
+    log_search: String,
+    log_gate_only: bool,
+    log_session_only: bool,
 
     agent_bin: PathBuf,
     cfg_dir: PathBuf,
@@ -235,6 +264,21 @@ impl RelayApp {
             last_env: Instant::now(),
             last_stats: Instant::now(),
             last_update_check: Instant::now(),
+            review_on: false,
+            review_steer: false,
+            review_cross_family: true,
+            review_depth: "normal".to_string(),
+            review_every: 900,
+            review_reviewers: Vec::new(),
+            review_output: String::new(),
+            handoff_session: None,
+            handoff_destinations: Vec::new(),
+            handoff_output: String::new(),
+            session_filter: SessionFilter::All,
+            session_search: String::new(),
+            log_search: String::new(),
+            log_gate_only: false,
+            log_session_only: false,
             agent_bin: find_agent_binary(),
             cfg_dir,
             env_file,
@@ -242,6 +286,11 @@ impl RelayApp {
             stats_file,
             log_file,
         };
+        {
+            let path = app.log_file.clone();
+            let tx = app.log_tx.clone();
+            std::thread::spawn(move || tail_log(path, tx));
+        }
         app.launch_at_login = app.is_autostart_enabled();
         app.load_auto_mode();
         app.load_smart();
@@ -666,6 +715,38 @@ impl RelayApp {
                     .and_then(|v| v.as_f64())
                     .map(|v| format!("{v}"))
                     .unwrap_or_default();
+                self.review_on = value
+                    .pointer("/review/enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                self.review_steer = value
+                    .pointer("/review/steer")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                self.review_cross_family = value
+                    .pointer("/review/cross_family_only")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                self.review_depth = value
+                    .pointer("/review/depth")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("normal")
+                    .to_string();
+                self.review_every = value
+                    .pointer("/review/every_secs")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(900);
+                self.review_reviewers = value
+                    .pointer("/review/reviewers")
+                    .and_then(|v| v.as_array())
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
                 let semantic = value.pointer("/smart/semantic");
                 let backend = semantic
                     .and_then(|value| value.get("backend"))
@@ -721,6 +802,14 @@ impl RelayApp {
             }
             Err(e) => self.push_log(format!("{}: {e}", args.join(" "))),
         }
+    }
+
+    fn capture_agent_bytes(&self, args: &[&str]) -> Vec<u8> {
+        hidden_cmd(&self.agent_bin)
+            .args(args)
+            .output()
+            .map(|o| o.stdout)
+            .unwrap_or_default()
     }
 
     fn capture_agent(&self, args: &[&str]) -> String {
@@ -1030,10 +1119,67 @@ impl eframe::App for RelayApp {
                 ui.add_space(8.0);
             }
 
+            let active = self
+                .sessions
+                .iter()
+                .filter(|s| session_is_active(&s.state))
+                .count();
+            let attention = self
+                .sessions
+                .iter()
+                .filter(|s| session_needs_attention(&s.state))
+                .count();
+            let robots = self.sessions.iter().filter(|s| s.mode == "robot").count();
+
             ui.horizontal(|ui| {
-                stat_card(ui, "Sessions today", &self.sessions_today.to_string());
-                stat_card(ui, "Turns today", &self.turns_today.to_string());
-                stat_card(ui, "Shim", if self.shim_installed { "on" } else { "off" });
+                stat_card_sub(
+                    ui,
+                    "Sessions today",
+                    &self.sessions_today.to_string(),
+                    &format!("{} tracked now", self.sessions.len()),
+                    None,
+                );
+                stat_card_sub(ui, "Turns today", &self.turns_today.to_string(), "", None);
+                stat_card_sub(
+                    ui,
+                    "Active",
+                    &active.to_string(),
+                    &format!("{robots} on robot"),
+                    (active > 0).then(|| state_color("working")),
+                );
+                stat_card_sub(
+                    ui,
+                    "Attention",
+                    &attention.to_string(),
+                    if attention > 0 { "waiting on you" } else { "" },
+                    (attention > 0).then(|| state_color("pending_question")),
+                );
+                stat_card_sub(
+                    ui,
+                    "Shim",
+                    if self.shim_installed { "on" } else { "off" },
+                    "",
+                    None,
+                );
+            });
+            ui.add_space(8.0);
+
+            ui.horizontal_wrapped(|ui| {
+                automation_pill(ui, "Compass", self.smart_on);
+                automation_pill(ui, "Steer", self.smart_on && self.steer_on);
+                automation_pill(ui, "Gate", self.gate_on);
+                ui.label(
+                    egui::RichText::new(format!("semantic: {}", semantic_label(self)))
+                        .weak()
+                        .size(11.0),
+                );
+                if self.smart_on && !self.semantic_trust && semantic_is_uncalibrated(self) {
+                    ui.label(
+                        egui::RichText::new("uncalibrated semantic actions blocked")
+                            .size(11.0)
+                            .color(state_color("pending_question")),
+                    );
+                }
             });
             ui.add_space(10.0);
 
@@ -1087,14 +1233,63 @@ impl eframe::App for RelayApp {
                 });
             });
             ui.add_space(4.0);
-            let cards = self.sessions.clone();
+            ui.horizontal_wrapped(|ui| {
+                for (label, value) in [
+                    ("All", SessionFilter::All),
+                    ("Active", SessionFilter::Active),
+                    ("Attention", SessionFilter::Attention),
+                    ("Robot", SessionFilter::Robot),
+                ] {
+                    if ui
+                        .selectable_label(self.session_filter == value, label)
+                        .clicked()
+                    {
+                        self.session_filter = value;
+                    }
+                }
+                ui.separator();
+                ui.label(egui::RichText::new("search").weak().size(11.0));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.session_search)
+                        .desired_width(180.0)
+                        .hint_text("alias, title or id"),
+                );
+                if !self.session_search.is_empty() && ui.button("✕").clicked() {
+                    self.session_search.clear();
+                }
+            });
+            ui.add_space(4.0);
+            let needle = self.session_search.trim().to_lowercase();
+            let filter = self.session_filter;
+            let cards: Vec<SessionCard> = self
+                .sessions
+                .iter()
+                .filter(|s| match filter {
+                    SessionFilter::All => true,
+                    SessionFilter::Active => session_is_active(&s.state),
+                    SessionFilter::Attention => session_needs_attention(&s.state),
+                    SessionFilter::Robot => s.mode == "robot",
+                })
+                .filter(|s| {
+                    needle.is_empty()
+                        || s.alias.to_lowercase().contains(&needle)
+                        || s.title.to_lowercase().contains(&needle)
+                        || s.session_id.to_lowercase().contains(&needle)
+                })
+                .cloned()
+                .collect();
             egui::ScrollArea::vertical()
                 .id_source("sessions")
                 .max_height(260.0)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     if cards.is_empty() {
-                        ui.label(egui::RichText::new("no active sessions").weak());
+                        let empty = if self.sessions.is_empty() {
+                            "no active sessions"
+                        } else {
+                            "no session matches this filter"
+                        };
+                        ui.label(egui::RichText::new(empty).weak());
                     }
                     for s in &cards {
                         session_card(
@@ -1109,6 +1304,51 @@ impl eframe::App for RelayApp {
                 });
 
             ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new("Diagnostics").strong());
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.log_search)
+                        .desired_width(200.0)
+                        .hint_text("filter the log"),
+                );
+                ui.checkbox(&mut self.log_gate_only, "Gate trace only");
+                if self.active_session.is_some() {
+                    ui.checkbox(&mut self.log_session_only, "This session only");
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{} lines", self.log.len()))
+                            .weak()
+                            .size(11.0),
+                    );
+                });
+            });
+            ui.add_space(4.0);
+
+            let log_needle = self.log_search.trim().to_lowercase();
+            let session_needle = self
+                .active_session
+                .as_ref()
+                .filter(|_| self.log_session_only)
+                .and_then(|active| {
+                    self.sessions
+                        .iter()
+                        .find(|s| &s.session_id == active)
+                        .map(|s| s.alias.to_lowercase())
+                });
+            let shown: Vec<&String> = self
+                .log
+                .iter()
+                .filter(|line| {
+                    let lower = line.to_lowercase();
+                    (log_needle.is_empty() || lower.contains(&log_needle))
+                        && (!self.log_gate_only || lower.contains("gate"))
+                        && session_needle
+                            .as_ref()
+                            .is_none_or(|alias| lower.contains(alias.as_str()))
+                })
+                .collect();
+
             egui::Frame::none()
                 .fill(ui.visuals().extreme_bg_color)
                 .inner_margin(egui::Margin::same(6.0))
@@ -1116,21 +1356,27 @@ impl eframe::App for RelayApp {
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical()
                         .id_source("log")
-                        .max_height(140.0)
+                        .max_height(160.0)
                         .auto_shrink([false, false])
                         .stick_to_bottom(true)
                         .show(ui, |ui| {
-                            for line in &self.log {
-                                ui.label(egui::RichText::new(line).monospace().size(11.0));
+                            for line in &shown {
+                                ui.label(egui::RichText::new(*line).monospace().size(11.0));
                             }
-                            if self.log.is_empty() {
-                                ui.label(egui::RichText::new("no output yet").weak().monospace());
+                            if shown.is_empty() {
+                                let empty = if self.log.is_empty() {
+                                    "no output yet"
+                                } else {
+                                    "no line matches this filter"
+                                };
+                                ui.label(egui::RichText::new(empty).weak().monospace());
                             }
                         });
                 });
         });
 
         self.settings_window(ctx, &mut act);
+        self.handoff_window(ctx, &mut act);
         self.help_window(ctx);
 
         if act.start {
@@ -1196,6 +1442,95 @@ impl eframe::App for RelayApp {
         }
         if let Some(val) = &act.set_budget {
             self.run_agent_note(&["automation", "smart", "budget", val.as_str()]);
+        }
+        if let Some(on) = act.set_review {
+            self.run_agent_note(&["automation", "review", if on { "on" } else { "off" }]);
+            self.load_smart();
+        }
+        if let Some(on) = act.set_review_steer {
+            self.run_agent_note(&[
+                "automation",
+                "review",
+                "steer",
+                if on { "on" } else { "off" },
+            ]);
+            self.load_smart();
+        }
+        if let Some(on) = act.set_review_same_family {
+            self.run_agent_note(&[
+                "automation",
+                "review",
+                "same-family",
+                if on { "on" } else { "off" },
+            ]);
+            self.load_smart();
+        }
+        if let Some(depth) = &act.set_review_depth {
+            self.run_agent_note(&["automation", "review", "depth", depth.as_str()]);
+            self.load_smart();
+        }
+        if let Some(secs) = &act.set_review_every {
+            self.run_agent_note(&["automation", "review", "every", secs.as_str()]);
+            self.load_smart();
+        }
+        if let Some(list) = &act.set_review_reviewers {
+            self.run_agent_note(&["automation", "review", "reviewers", list.as_str()]);
+            self.load_smart();
+        }
+        if let Some(sid) = &act.run_review {
+            let mut args = vec!["automation", "review", "run", sid.as_str()];
+            if !self.review_depth.is_empty() {
+                args.push("--depth");
+                args.push(self.review_depth.as_str());
+            }
+            self.review_output = "running cross review…".to_string();
+            let out = self.capture_agent(&args);
+            self.review_output = if out.trim().is_empty() {
+                "cross review returned nothing".to_string()
+            } else {
+                out
+            };
+        }
+        if let Some(sid) = &act.open_handoff {
+            let sid = sid.clone();
+            let raw = self.capture_agent_bytes(&["handoff", "destinations", &sid, "--json"]);
+            self.handoff_destinations = parse_handoff_destinations(&raw);
+            self.handoff_output.clear();
+            self.handoff_session = Some(sid);
+        }
+        if act.close_handoff {
+            self.handoff_session = None;
+            self.handoff_destinations.clear();
+            self.handoff_output.clear();
+        }
+        if let Some((sid, dest)) = &act.handoff_to {
+            let (sid, dest) = (sid.clone(), dest.clone());
+            self.handoff_output = "handing off…".to_string();
+            let out = self.capture_agent(&["handoff", &sid, "--to", &dest]);
+            self.handoff_output = if out.trim().is_empty() {
+                format!("handed off to {dest}")
+            } else {
+                out
+            };
+        }
+        if let Some(workspace) = &act.handoff_receipt {
+            let workspace = workspace.clone();
+            let out = self.capture_agent(&["handoff", "receipt", &workspace]);
+            self.handoff_output = if out.trim().is_empty() {
+                "no receipt yet".to_string()
+            } else {
+                out
+            };
+        }
+        if let Some(sid) = &act.session_usage {
+            self.usage_session = sid.clone();
+            self.refresh_usage();
+            self.show_settings = true;
+        }
+        if let Some(sid) = &act.session_pins {
+            self.usage_session = sid.clone();
+            self.list_pins();
+            self.show_settings = true;
         }
         if act.refresh_usage {
             self.refresh_usage();
@@ -1404,6 +1739,107 @@ impl RelayApp {
                             act.set_budget = Some("off".to_string());
                         }
                     });
+
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.label(egui::RichText::new("Cross review").strong());
+                    ui.label(
+                        egui::RichText::new(
+                            "A second agent reads a chat and reports what the first one missed.",
+                        )
+                        .weak()
+                        .size(11.0),
+                    );
+                    ui.add_space(4.0);
+                    if ui
+                        .checkbox(&mut self.review_on, "Run cross review on a cadence")
+                        .changed()
+                    {
+                        act.set_review = Some(self.review_on);
+                    }
+                    ui.add_enabled_ui(self.review_on, |ui| {
+                        if ui
+                            .checkbox(
+                                &mut self.review_steer,
+                                "Let the review correct the chat it reviewed",
+                            )
+                            .changed()
+                        {
+                            act.set_review_steer = Some(self.review_steer);
+                        }
+                        let mut same_family = !self.review_cross_family;
+                        if ui
+                            .checkbox(&mut same_family, "Allow a reviewer from the same family")
+                            .changed()
+                        {
+                            self.review_cross_family = !same_family;
+                            act.set_review_same_family = Some(same_family);
+                        }
+                        ui.horizontal(|ui| {
+                            ui.label("Depth");
+                            for depth in ["shallow", "normal", "deep"] {
+                                if ui
+                                    .selectable_label(self.review_depth == depth, depth)
+                                    .clicked()
+                                {
+                                    self.review_depth = depth.to_string();
+                                    act.set_review_depth = Some(depth.to_string());
+                                }
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Every");
+                            for (label, secs) in
+                                [("5m", 300), ("15m", 900), ("30m", 1800), ("1h", 3600)]
+                            {
+                                if ui
+                                    .selectable_label(self.review_every == secs, label)
+                                    .clicked()
+                                {
+                                    self.review_every = secs;
+                                    act.set_review_every = Some(secs.to_string());
+                                }
+                            }
+                        });
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Reviewers");
+                            let known = ["claude-cli", "codex-cli", "gemini-cli", "cursor-cli"];
+                            for id in known {
+                                let mut on = self.review_reviewers.iter().any(|r| r == id);
+                                if ui.checkbox(&mut on, id).changed() {
+                                    if on {
+                                        self.review_reviewers.push(id.to_string());
+                                    } else {
+                                        self.review_reviewers.retain(|r| r != id);
+                                    }
+                                    if self.review_reviewers.is_empty() {
+                                        self.review_reviewers.push(id.to_string());
+                                    } else {
+                                        act.set_review_reviewers =
+                                            Some(self.review_reviewers.join(","));
+                                    }
+                                }
+                            }
+                        });
+                    });
+                    if !self.review_output.is_empty() {
+                        ui.add_space(4.0);
+                        egui::ScrollArea::vertical()
+                            .id_source("review_out")
+                            .max_height(140.0)
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(&self.review_output)
+                                        .monospace()
+                                        .size(11.0),
+                                );
+                            });
+                        if ui.button("Clear review output").clicked() {
+                            self.review_output.clear();
+                        }
+                    }
+                    ui.add_space(10.0);
+                    ui.separator();
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         ui.label("Session");
@@ -1805,6 +2241,89 @@ impl RelayApp {
         }
     }
 
+    fn handoff_window(&mut self, ctx: &egui::Context, act: &mut Actions) {
+        let Some(session) = self.handoff_session.clone() else {
+            return;
+        };
+        let mut open = true;
+        egui::Window::new("Hand off")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(560.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(format!("from {}", truncate_str(&session, 48)))
+                        .weak()
+                        .size(11.0),
+                );
+                ui.add_space(6.0);
+                if self.handoff_destinations.is_empty() {
+                    ui.label(
+                        egui::RichText::new(
+                            "No destination found. Open another workspace, or install an agent CLI or editor.",
+                        )
+                        .weak(),
+                    );
+                }
+                for kind in ["chat", "cli", "app"] {
+                    let group: Vec<HandoffDest> = self
+                        .handoff_destinations
+                        .iter()
+                        .filter(|d| d.kind == kind)
+                        .cloned()
+                        .collect();
+                    if group.is_empty() {
+                        continue;
+                    }
+                    let heading = match kind {
+                        "chat" => "Claude chats",
+                        "cli" => "Agent CLIs",
+                        _ => "Editors",
+                    };
+                    ui.label(egui::RichText::new(heading).strong().size(12.0));
+                    for dest in group {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(&dest.label).size(12.0));
+                            if dest.linked {
+                                ui.label(egui::RichText::new("linked").size(10.0).weak());
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.button("Hand off").clicked() {
+                                        act.handoff_to =
+                                            Some((session.clone(), dest.id.clone()));
+                                    }
+                                    if !dest.workspace.is_empty()
+                                        && ui.button("Check receipt").clicked()
+                                    {
+                                        act.handoff_receipt = Some(dest.workspace.clone());
+                                    }
+                                },
+                            );
+                        });
+                    }
+                    ui.add_space(4.0);
+                }
+                if !self.handoff_output.is_empty() {
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .id_source("handoff_out")
+                        .max_height(180.0)
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(&self.handoff_output)
+                                    .monospace()
+                                    .size(11.0),
+                            );
+                        });
+                }
+            });
+        if !open {
+            act.close_handoff = true;
+        }
+    }
+
     fn help_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_help;
         egui::Window::new("Help")
@@ -1846,6 +2365,19 @@ struct Actions {
     set_gate: Option<bool>,
     set_feedback: Option<bool>,
     set_budget: Option<String>,
+    set_review: Option<bool>,
+    set_review_steer: Option<bool>,
+    set_review_same_family: Option<bool>,
+    set_review_depth: Option<String>,
+    set_review_every: Option<String>,
+    set_review_reviewers: Option<String>,
+    run_review: Option<String>,
+    open_handoff: Option<String>,
+    session_usage: Option<String>,
+    session_pins: Option<String>,
+    handoff_to: Option<(String, String)>,
+    handoff_receipt: Option<String>,
+    close_handoff: bool,
     refresh_usage: bool,
     list_pins: bool,
     clear_pins: bool,
@@ -1902,6 +2434,41 @@ struct SessionCard {
     mode: String,
     tapped: bool,
     rewrite: bool,
+}
+
+#[derive(Clone)]
+struct HandoffDest {
+    id: String,
+    label: String,
+    kind: String,
+    workspace: String,
+    linked: bool,
+}
+
+fn parse_handoff_destinations(data: &[u8]) -> Vec<HandoffDest> {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) else {
+        return Vec::new();
+    };
+    let list = value
+        .get("destinations")
+        .and_then(|v| v.as_array())
+        .or_else(|| value.as_array());
+    let Some(list) = list else {
+        return Vec::new();
+    };
+    let s = |o: &serde_json::Value, k: &str| {
+        o.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
+    };
+    list.iter()
+        .map(|o| HandoffDest {
+            id: s(o, "id"),
+            label: s(o, "label"),
+            kind: s(o, "kind"),
+            workspace: s(o, "workspace"),
+            linked: o.get("linked").and_then(|x| x.as_bool()).unwrap_or(false),
+        })
+        .filter(|d| !d.id.is_empty())
+        .collect()
 }
 
 #[derive(Clone)]
@@ -2054,6 +2621,49 @@ fn health_badge(status: &str) -> (&'static str, egui::Color32) {
     }
 }
 
+fn session_is_active(state: &str) -> bool {
+    matches!(state, "working" | "subagent_running")
+}
+
+fn session_needs_attention(state: &str) -> bool {
+    matches!(state, "pending_question" | "pending_permission" | "error")
+}
+
+fn semantic_label(app: &RelayApp) -> String {
+    let provider = if app.semantic_provider.is_empty() {
+        "off".to_string()
+    } else {
+        app.semantic_provider.clone()
+    };
+    if provider == "off" || app.semantic_model.is_empty() {
+        provider
+    } else {
+        format!("{provider} ({})", truncate_str(&app.semantic_model, 28))
+    }
+}
+
+fn semantic_is_uncalibrated(app: &RelayApp) -> bool {
+    !matches!(app.semantic_provider.as_str(), "" | "off" | "local")
+}
+
+fn automation_pill(ui: &mut egui::Ui, label: &str, on: bool) {
+    let (fg, bg) = if on {
+        (
+            egui::Color32::WHITE,
+            egui::Color32::from_rgb(0x2a, 0x8a, 0x4a),
+        )
+    } else {
+        (egui::Color32::GRAY, ui.visuals().faint_bg_color)
+    };
+    egui::Frame::none()
+        .fill(bg)
+        .inner_margin(egui::Margin::symmetric(8.0, 3.0))
+        .rounding(10.0)
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(label).size(11.0).strong().color(fg));
+        });
+}
+
 fn state_color(state: &str) -> egui::Color32 {
     match state {
         "working" | "subagent_running" => egui::Color32::from_rgb(0x3f, 0xb9, 0x50),
@@ -2196,12 +2806,36 @@ fn session_card(
                         );
                     }
                 });
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Cross review").clicked() {
+                        act.run_review = Some(s.session_id.clone());
+                    }
+                    if ui.button("Hand off").clicked() {
+                        act.open_handoff = Some(s.session_id.clone());
+                    }
+                    if ui.button("Usage").clicked() {
+                        act.session_usage = Some(s.session_id.clone());
+                    }
+                    if ui.button("Gate pins").clicked() {
+                        act.session_pins = Some(s.session_id.clone());
+                    }
+                    if ui.button("Copy id").clicked() {
+                        ui.output_mut(|o| o.copied_text = s.session_id.clone());
+                    }
+                });
             }
         });
     ui.add_space(6.0);
 }
 
-fn stat_card(ui: &mut egui::Ui, title: &str, value: &str) {
+fn stat_card_sub(
+    ui: &mut egui::Ui,
+    title: &str,
+    value: &str,
+    sub: &str,
+    accent: Option<egui::Color32>,
+) {
     egui::Frame::none()
         .fill(ui.visuals().faint_bg_color)
         .inner_margin(egui::Margin::same(10.0))
@@ -2209,8 +2843,17 @@ fn stat_card(ui: &mut egui::Ui, title: &str, value: &str) {
         .show(ui, |ui| {
             ui.set_width(150.0);
             ui.vertical(|ui| {
-                ui.label(egui::RichText::new(value).size(20.0).strong());
+                let mut text = egui::RichText::new(value).size(20.0).strong();
+                if let Some(color) = accent {
+                    text = text.color(color);
+                }
+                ui.label(text);
                 ui.label(egui::RichText::new(title).weak().size(11.0));
+                if sub.is_empty() {
+                    ui.label(egui::RichText::new(" ").weak().size(10.0));
+                } else {
+                    ui.label(egui::RichText::new(sub).weak().size(10.0));
+                }
             });
         });
 }
@@ -2257,6 +2900,43 @@ fn parse_env_file(path: &PathBuf) -> BTreeMap<String, String> {
         }
     }
     map
+}
+
+fn tail_log(path: PathBuf, tx: Sender<String>) {
+    let mut cursor: Option<u64> = None;
+    loop {
+        match std::fs::metadata(&path).map(|meta| meta.len()) {
+            Ok(len) => {
+                let mut at = match cursor {
+                    Some(at) if at <= len => at,
+                    Some(_) => 0,
+                    None => len.saturating_sub(LOG_TAIL_BYTES),
+                };
+                let skip_partial = cursor.is_none() && at > 0;
+                if len > at {
+                    if let Ok(mut file) = std::fs::File::open(&path) {
+                        let mut raw = Vec::new();
+                        if file.seek(SeekFrom::Start(at)).is_ok()
+                            && file.read_to_end(&mut raw).is_ok()
+                        {
+                            if let Some(end) = raw.iter().rposition(|byte| *byte == b'\n') {
+                                at += end as u64 + 1;
+                                let text = String::from_utf8_lossy(&raw[..=end]);
+                                for line in text.lines().skip(usize::from(skip_partial)) {
+                                    if tx.send(line.to_string()).is_err() {
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                cursor = Some(at);
+            }
+            Err(_) => cursor = None,
+        }
+        std::thread::sleep(LOG_TAIL_POLL);
+    }
 }
 
 fn pump(stream: impl Read, tx: Sender<String>) {

@@ -29,6 +29,25 @@ pub fn secure_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+pub fn secure_create_new(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
+    if let Some(dir) = path.parent() {
+        secure_dir(dir);
+    }
+    let sequence = WRITE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("new.{}.{}", std::process::id(), sequence));
+    write_private(&tmp, bytes)?;
+    let claimed = match std::fs::hard_link(&tmp, path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(error) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(error);
+        }
+    };
+    let _ = std::fs::remove_file(&tmp);
+    Ok(claimed)
+}
+
 #[cfg(unix)]
 fn write_private(tmp: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -110,6 +129,40 @@ mod tests {
             .expect("dir")
             .flatten()
             .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp."))
+            .count();
+        assert_eq!(leftovers, 0, "temporary files were left behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exactly_one_racing_writer_claims_a_new_secret() {
+        let dir = std::env::temp_dir().join(format!(
+            "vsc-relay-fsutil-claim-{}-{}",
+            std::process::id(),
+            WRITE_SEQUENCE.load(std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("secret.key");
+
+        let mut handles = Vec::new();
+        for round in 0..8u8 {
+            let path = path.clone();
+            handles.push(std::thread::spawn(move || {
+                secure_create_new(&path, &[round; 32]).expect("claim")
+            }));
+        }
+        let claims = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread"))
+            .filter(|claimed| *claimed)
+            .count();
+
+        assert_eq!(claims, 1, "more than one writer claimed the secret");
+        assert_eq!(std::fs::read(&path).expect("read").len(), 32);
+        let leftovers = std::fs::read_dir(&dir)
+            .expect("dir")
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".new."))
             .count();
         assert_eq!(leftovers, 0, "temporary files were left behind");
         let _ = std::fs::remove_dir_all(&dir);

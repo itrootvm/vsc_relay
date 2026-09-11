@@ -87,6 +87,11 @@ pub fn single_instance_holder(name: &str) -> Option<u32> {
 }
 
 #[cfg(windows)]
+pub fn single_instance_holder(_name: &str) -> Option<u32> {
+    None
+}
+
+#[cfg(windows)]
 pub fn acquire_single_instance(name: &str) -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
     use windows_sys::Win32::System::Threading::CreateMutexW;
@@ -103,11 +108,6 @@ pub fn acquire_single_instance(name: &str) -> bool {
             true
         }
     }
-}
-
-#[cfg(windows)]
-pub fn single_instance_holder(_name: &str) -> Option<u32> {
-    None
 }
 
 #[cfg(unix)]

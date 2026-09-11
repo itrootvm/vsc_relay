@@ -126,6 +126,7 @@ async fn run_cli(
     let mut cmd = tokio::process::Command::new(bin);
     cmd.args(args)
         .current_dir(&workdir.0)
+        .env("PATH", super::discover::path_env())
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

@@ -3,16 +3,25 @@ use std::path::PathBuf;
 
 pub const BUILTIN_MODEL_ID: &str = "minilm-multilingual-nli-fp16-v2";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SemanticBackend {
     Off,
-    #[default]
     Local,
     Ollama,
     OpenAiCompatible,
 
     AgentCli,
+}
+
+impl Default for SemanticBackend {
+    fn default() -> Self {
+        if cfg!(target_os = "linux") {
+            Self::Off
+        } else {
+            Self::Local
+        }
+    }
 }
 
 impl SemanticBackend {
@@ -75,7 +84,7 @@ pub struct SemanticConfig {
 impl Default for SemanticConfig {
     fn default() -> Self {
         Self {
-            backend: SemanticBackend::Local,
+            backend: SemanticBackend::default(),
             model: default_model(),
             endpoint: None,
             local_dir: None,
@@ -209,7 +218,7 @@ mod tests {
     #[test]
     fn off_machine_disclosure_only_for_external_backends() {
         let mut config = SemanticConfig::default();
-        assert_eq!(config.backend, SemanticBackend::Local);
+        assert_eq!(config.backend, SemanticBackend::default());
         assert!(!config.sends_off_machine());
         assert!(config.off_machine_disclosure().is_none());
 
@@ -235,6 +244,16 @@ mod tests {
 
         config.apply_preset("off").unwrap();
         assert!(!config.sends_off_machine());
+    }
+
+    #[test]
+    fn default_backend_tracks_the_compiled_local_support() {
+        if cfg!(target_os = "linux") {
+            assert_eq!(SemanticBackend::default(), SemanticBackend::Off);
+        } else {
+            assert_eq!(SemanticBackend::default(), SemanticBackend::Local);
+        }
+        assert!(!SemanticConfig::default().sends_off_machine());
     }
 
     #[test]

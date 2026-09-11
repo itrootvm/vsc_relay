@@ -300,6 +300,7 @@ pub fn cli_auth_state(bin: &str) -> Option<String> {
     let resolved = resolve_cli(bin)?;
     let output = std::process::Command::new(resolved)
         .args(agent.auth_check)
+        .env("PATH", crate::supervisor::discover::path_env())
         .output()
         .ok()?;
     let text = String::from_utf8_lossy(&output.stdout);
@@ -322,22 +323,7 @@ pub enum DestinationKind {
 }
 
 pub fn resolve_cli(bin: &str) -> Option<PathBuf> {
-    if let Some(paths) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&paths) {
-            let candidate = dir.join(bin);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    let home = dirs::home_dir()?;
-    for dir in [".local/bin", "bin"] {
-        let candidate = home.join(dir).join(bin);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
+    crate::supervisor::discover::which_bin(bin)
 }
 
 pub fn installed_clis() -> Vec<(String, String, Vec<String>)> {
@@ -387,6 +373,7 @@ pub fn launcher_script(
         .map(|f| shell_quote(f))
         .collect::<Vec<_>>()
         .join(" ");
+    #[cfg(target_os = "macos")]
     let close_window = "/usr/bin/osascript -e 'on run argv' \
          -e 'tell application \"Terminal\"' \
          -e 'repeat with w in windows' \
@@ -394,8 +381,25 @@ pub fn launcher_script(
          -e 'if tty of t is (item 1 of argv) then close w' \
          -e 'end repeat' -e 'end repeat' -e 'end tell' -e 'end run' \
          \"$vsc_tty\" >/dev/null 2>&1";
+    #[cfg(not(target_os = "macos"))]
+    let close_window = ":";
+
+    #[cfg(target_os = "macos")]
+    let hold_window = ":";
+    #[cfg(not(target_os = "macos"))]
+    let hold_window = "read vsc_key </dev/tty >/dev/null 2>&1 || true";
+
+    #[cfg(target_os = "macos")]
+    let path_line = String::new();
+    #[cfg(not(target_os = "macos"))]
+    let path_line = format!(
+        "PATH={}\nexport PATH\n",
+        shell_quote(&crate::supervisor::discover::path_env().to_string_lossy())
+    );
+
     format!(
         "#!/bin/sh\n\
+         {path_line}\
          cd {workspace} || exit 1\n\
          vsc_tty=$(tty)\n\
          {bin} {flags} \"$(cat {prompt})\"\n\
@@ -405,6 +409,7 @@ pub fn launcher_script(
          else\n\
          \x20 echo\n\
          \x20 echo \"vsc-relay: the agent exited with status $vsc_status, this window stays open\"\n\
+         \x20 {hold_window}\n\
          fi\n\
          exit \"$vsc_status\"\n",
         workspace = shell_quote(&workspace.display().to_string()),
@@ -412,6 +417,8 @@ pub fn launcher_script(
         flags = flag_text,
         prompt = shell_quote(&prompt.display().to_string()),
         close_window = close_window,
+        hold_window = hold_window,
+        path_line = path_line,
     )
 }
 
@@ -510,16 +517,82 @@ pub fn launch_cli(
         std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o700))?;
     }
 
+    open_terminal_on(&script_path).map_err(|error| anyhow!("{error} (for {bin})"))?;
+    prune_launchers(&dir);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn open_terminal_on(script: &Path) -> Result<()> {
     let status = std::process::Command::new("/usr/bin/open")
         .arg("-a")
         .arg("Terminal")
-        .arg(&script_path)
+        .arg(script)
         .status()?;
     if !status.success() {
-        return Err(anyhow!("could not open a terminal for {bin}"));
+        return Err(anyhow!("could not open a terminal"));
     }
-    prune_launchers(&dir);
     Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+const TERMINALS: &[(&str, &[&str])] = &[
+    ("x-terminal-emulator", &["-e"]),
+    ("ptyxis", &["--"]),
+    ("kgx", &["--"]),
+    ("gnome-terminal", &["--"]),
+    ("konsole", &["-e"]),
+    ("xfce4-terminal", &["-x"]),
+    ("mate-terminal", &["-x"]),
+    ("tilix", &["-e"]),
+    ("terminator", &["-x"]),
+    ("alacritty", &["-e"]),
+    ("wezterm", &["start", "--"]),
+    ("kitty", &[]),
+    ("foot", &[]),
+    ("lxterminal", &["-e"]),
+    ("deepin-terminal", &["-e"]),
+    ("qterminal", &["-e"]),
+    ("urxvt", &["-e"]),
+    ("st", &["-e"]),
+    ("xterm", &["-e"]),
+];
+
+#[cfg(not(target_os = "macos"))]
+fn reap_detached(mut child: std::process::Child) {
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open_terminal_on(script: &Path) -> Result<()> {
+    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        return Err(anyhow!(
+            "no graphical session to open a terminal in; run {} yourself",
+            script.display()
+        ));
+    }
+    for (term, lead) in TERMINALS {
+        let Some(path) = crate::supervisor::discover::which_bin(term) else {
+            continue;
+        };
+        let spawned = std::process::Command::new(&path)
+            .args(*lead)
+            .arg(script)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        if let Ok(child) = spawned {
+            reap_detached(child);
+            return Ok(());
+        }
+    }
+    Err(anyhow!(
+        "no terminal emulator found on PATH; install one (xterm, konsole, gnome-terminal, alacritty, kitty, foot) or run {} yourself",
+        script.display()
+    ))
 }
 
 #[derive(Debug, Clone)]
@@ -534,6 +607,7 @@ pub struct Destination {
     pub linked: bool,
 }
 
+#[cfg(target_os = "macos")]
 fn app_bundle(app: &str) -> Option<PathBuf> {
     for root in ["/Applications", "/System/Applications"] {
         let path = PathBuf::from(root).join(format!("{app}.app"));
@@ -547,6 +621,25 @@ fn app_bundle(app: &str) -> Option<PathBuf> {
     home.exists().then_some(home)
 }
 
+#[cfg(not(target_os = "macos"))]
+fn editor_commands(app: &str) -> &'static [&'static str] {
+    match app {
+        "Antigravity" => &["antigravity"],
+        "Cursor" => &["cursor"],
+        "Windsurf" => &["windsurf"],
+        "VSCodium" => &["codium", "vscodium"],
+        "Visual Studio Code" => &["code", "code-insiders", "code-oss"],
+        _ => &[],
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn app_bundle(app: &str) -> Option<PathBuf> {
+    editor_commands(app)
+        .iter()
+        .find_map(|name| crate::supervisor::discover::which_bin(name))
+}
+
 pub fn installed_apps() -> Vec<String> {
     EDITOR_APPS
         .iter()
@@ -555,6 +648,7 @@ pub fn installed_apps() -> Vec<String> {
         .collect()
 }
 
+#[cfg(target_os = "macos")]
 pub fn open_in_app(app: &str, workspace: &Path) -> Result<()> {
     let status = std::process::Command::new("/usr/bin/open")
         .arg("-a")
@@ -563,6 +657,34 @@ pub fn open_in_app(app: &str, workspace: &Path) -> Result<()> {
         .status()?;
     if !status.success() {
         return Err(anyhow!("could not open {app} on {}", workspace.display()));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn open_in_app(app: &str, workspace: &Path) -> Result<()> {
+    let bin = app_bundle(app)
+        .ok_or_else(|| anyhow!("{app} is not installed or not on PATH on this machine"))?;
+    let mut child = std::process::Command::new(&bin)
+        .arg(workspace)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|error| anyhow!("could not start {}: {error}", bin.display()))?;
+
+    for _ in 0..15 {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => {
+                return Err(anyhow!(
+                    "{app} refused to open {} ({status})",
+                    workspace.display()
+                ))
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            Err(error) => return Err(anyhow!("could not track {app}: {error}")),
+        }
     }
     Ok(())
 }
@@ -617,11 +739,30 @@ mod tests {
         assert!(!script.contains("exec "), "an exec would leak the window");
         assert!(script.contains("vsc_tty=$(tty)"));
         assert!(script.contains("if [ \"$vsc_status\" -eq 0 ]"));
-        let close_at = script.find("osascript").expect("no close for the window");
         let keep_at = script
             .find("this window stays open")
             .expect("no failure notice");
-        assert!(close_at < keep_at, "the window is closed on failure too");
+
+        #[cfg(target_os = "macos")]
+        {
+            let close_at = script.find("osascript").expect("no close for the window");
+            assert!(close_at < keep_at, "the window is closed on failure too");
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(
+                !script.contains("osascript"),
+                "an AppleScript close cannot work off macOS"
+            );
+            let hold_at = script
+                .find("read vsc_key")
+                .expect("nothing holds the window open on failure");
+            assert!(
+                keep_at < hold_at,
+                "the window is held before the failure is reported"
+            );
+        }
+
         assert!(script.trim_end().ends_with("exit \"$vsc_status\""));
     }
 

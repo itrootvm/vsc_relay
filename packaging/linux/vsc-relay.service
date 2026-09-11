@@ -2,6 +2,8 @@
 Description=VS Code Agent Relay (Telegram control for Claude Code in VS Code)
 Documentation=https://github.com/itrootvm/vsc_relay
 After=graphical-session.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple

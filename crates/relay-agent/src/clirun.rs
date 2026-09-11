@@ -167,6 +167,10 @@ pub async fn run_supervised(
     }
     command.arg(prompt);
     command.cwd(workspace);
+    command.env("PATH", crate::supervisor::discover::path_env());
+    if std::env::var_os("TERM").is_none() {
+        command.env("TERM", "xterm-256color");
+    }
 
     let mut child = pty
         .slave

@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+- Linux builds again. 0.5.0 added `relay-semantic`, which linked ONNX Runtime unconditionally,
+  and the prebuilt runtime needs glibc 2.38 or newer and has no musl build at all. The daemon
+  therefore failed to link on Debian 12, Ubuntu 22.04 and RHEL 9, and the static tarball could
+  not be produced at all. ONNX is now left out of every Linux target, not just the musl one, so
+  the agent, the shim and the GUI build on any distribution and the musl tarball is static again.
+  On Linux the semantic backend defaults to off; `ollama` keeps
+  classification on the machine, and the OpenAI-compatible and agent-CLI backends are unchanged.
+  macOS and Windows keep the local backend exactly as before.
+- A clean clone builds. `relay-agent` embedded `crates/relay-semantic/scripts/train_nli_bundle.py`
+  with `include_bytes!`, but `.gitignore` excludes `crates/*/scripts/`, so the file was never
+  committed and the build failed on every platform for anyone but its author. The trainer is now
+  staged by a build script and `automation smart train-local` says so when it is not bundled.
+- The dossier digest key is claimed atomically. It was created with a plain write, so on a fresh
+  machine two processes that started together each generated a different key and the last writer
+  silently invalidated every digest the other had already stored.
+- Session handoff works on Linux. It opened a terminal with `/usr/bin/open -a Terminal` and found
+  editors by scanning for `.app` bundles, so no destination was ever offered and the CLI path
+  failed outright; on Debian `/usr/bin/open` is `xdg-open` and on some distributions it is the
+  util-linux console tool. Editors are now found on PATH and a CLI handoff opens the first
+  terminal it finds among nineteen emulators, telling you which script to run yourself when there
+  is no graphical session.
+- Agent CLIs are found when the relay runs as a systemd user service. That unit gets a minimal
+  PATH with no `~/.local/bin` and no nvm, so every CLI backend looked uninstalled and
+  node-shebang CLIs could not start. The lookup now also covers the usual per-user install
+  directories and the newest nvm node, and that PATH, plus TERM, is passed to every CLI it spawns.
+- The live log pane is no longer blank on Linux and Windows. 0.5.0 moved the daemon's output to
+  `~/.vsc-relay/agent.log`, and the app only ever showed a child process's stdout. It now follows
+  that file, across rotation, and the pane has a text filter and a gate-trace toggle.
+- The Linux and Windows app caught up with the macOS one: session search with All, Active,
+  Attention and Robot filters, Active and Attention counts, a Compass/Steer/Gate strip with the
+  semantic backend it is using, the full cross-review settings block, and per-session Cross
+  review, Hand off, Usage, Gate pins and Copy id.
+- The danger list covers Linux. It knew `/dev/sd` but not `/dev/nvme`, `/dev/vd` or `/dev/xvd`,
+  missed `sudo tee` as a way to write a device, and had nothing for LVM, `wipefs`, `shred`,
+  account deletion or package removal, so Auto could approve them.
+- `./systemd.sh` supervises a dev clone the way `./launchd.sh` does on macOS, with `install`,
+  `uninstall`, `status`, `start`, `stop`, `restart` and a `logs` that reads the file the daemon
+  actually writes.
+
 ## 0.5.0 - 2026-09-11
 
 - Cross review. A model from a different family reads a chat and says whether the work still

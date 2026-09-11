@@ -236,16 +236,24 @@ impl Drop for InformationProfileLock {
     }
 }
 
+fn read_digest_key(path: &std::path::Path) -> Option<[u8; 32]> {
+    <[u8; 32]>::try_from(std::fs::read(path).ok()?.as_slice()).ok()
+}
+
 fn digest_key() -> Result<[u8; 32]> {
     let path = digest_key_path();
-    if let Ok(bytes) = std::fs::read(&path) {
-        if let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) {
-            return Ok(key);
-        }
+    if let Some(key) = read_digest_key(&path) {
+        return Ok(key);
     }
     let mut key = [0u8; 32];
     getrandom::getrandom(&mut key)
         .map_err(|error| anyhow::anyhow!("generate dossier digest key: {error}"))?;
+    if crate::fsutil::secure_create_new(&path, &key)? {
+        return Ok(key);
+    }
+    if let Some(existing) = read_digest_key(&path) {
+        return Ok(existing);
+    }
     crate::fsutil::secure_write(&path, &key)?;
     Ok(key)
 }
