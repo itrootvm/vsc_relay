@@ -21,6 +21,15 @@ Core components:
 - `relay-gui`: egui desktop setup app on Linux and Windows for the same setup, logs,
   service control, and shim management.
 
+Cross review: a model from a different family (Codex, Antigravity, Claude, Cursor or Gemini
+CLI) reads a chat and judges it against the human's latest instruction. It runs by hand from a
+chat card, the macOS app, or `vsc-relay-agent automation review run <id>`, or on a schedule in
+Auto and Robot. A correction reaches the chat only when a person runs the review or in Robot
+with review steering on, and always after an escalation guard.
+
+Decision log: every decision is one JSON line in `~/.vsc-relay/decisions.jsonl`, counted with
+`vsc-relay-agent decisions --since 24h --by outcome`.
+
 Telegram commands:
 
 - `/auth <key>` pairs the current chat.
@@ -43,7 +52,8 @@ Support matrix:
 - Claude Code in VS Code: read status, send prompts, answer questions with shim, permission
   actions, model and permission-mode controls.
 - Codex in VS Code: experimental read support and window focus only. No background prompt
-  injection, question answers, permission actions, or model controls in 0.4.0.
+  injection, question answers, permission actions, or model controls in 0.5.0. Cross review
+  works for Codex chats, and its corrections reach them through the GUI control backend.
 
 Security model:
 
@@ -59,5 +69,5 @@ Security model:
   append-only audit journal, no transcript redaction layer, and no complete Codex background
   control.
 
-Current version: 0.4.0. Packaged builds cover macOS (Apple Silicon), Linux (static musl),
+Current version: 0.5.0. Packaged builds cover macOS (Apple Silicon), Linux (static musl),
 and Windows (x64). Intel macOS support is planned.

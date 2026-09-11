@@ -2,6 +2,7 @@ use crate::auth::Auth;
 use crate::dedup::{self, PromptDedup};
 use crate::inject;
 use crate::permission::{self, Permissions};
+use crate::supervisor::{discover, pool};
 use crate::telegram::{esc_html, keyboard, Telegram};
 use relay_ipc::Endpoint;
 use serde_json::Value;
@@ -183,30 +184,70 @@ async fn handle_stream_line(
                     .and_then(|i| i.get("questions"))
                     .cloned()
                     .unwrap_or(Value::Array(vec![]));
-                let mut pending = Pending {
+                let session_id = inject::session_id_of(pid);
+                let cfg = crate::automation::AutomationConfig::load();
+                if auto_answer_eligible(&cfg, session_id.as_deref(), &alias, &questions) {
+                    let sid = session_id.clone();
+                    let alias_c = alias.clone();
+                    let questions_c = questions.clone();
+                    let request_id_c = request_id.clone();
+                    let tool_use_id_c = tool_use_id.clone();
+                    let min_confidence = cfg.auto.auto_answer_min_confidence;
+                    let providers = cfg.robot.providers.clone();
+                    let q_c = q.clone();
+                    let tg_c = tg.clone();
+                    let auth_c = auth.clone();
+                    let dedup_c = dedup.clone();
+                    tokio::spawn(async move {
+                        let handled = match sid.as_deref() {
+                            Some(s) => {
+                                commit_auto_answer(
+                                    pid,
+                                    &alias_c,
+                                    s,
+                                    &request_id_c,
+                                    &tool_use_id_c,
+                                    &questions_c,
+                                    min_confidence,
+                                    &providers,
+                                    &tg_c,
+                                    &auth_c,
+                                )
+                                .await
+                            }
+                            None => false,
+                        };
+                        if !handled {
+                            send_question_card(
+                                pid,
+                                alias_c,
+                                sid,
+                                request_id_c,
+                                tool_use_id_c,
+                                questions_c,
+                                &q_c,
+                                &tg_c,
+                                &auth_c,
+                                &dedup_c,
+                            )
+                            .await;
+                        }
+                    });
+                    return;
+                }
+                send_question_card(
+                    pid,
+                    alias,
+                    session_id,
                     request_id,
                     tool_use_id,
                     questions,
-                    answers: HashMap::new(),
-                    cards: Vec::new(),
-                    alias,
-                    session_id: inject::session_id_of(pid),
-                    started: Instant::now(),
-                };
-                let (text, kb) = render(pid, &pending);
-                for chat in auth.recipients().await {
-                    if let Ok(mid) = tg.send(chat, &text, Some(kb.clone())).await {
-                        pending.cards.push((chat, mid));
-                    }
-                }
-                info!(
-                    target: "relay::trace",
-                    pipeline = "out", stage = "sent", kind = "question",
-                    corr = %pending.tool_use_id, pid, alias = %pending.alias,
-                    chats = pending.cards.len(),
-                    "question card sent"
-                );
-                q.lock().await.insert(pid, pending);
+                    q,
+                    tg,
+                    auth,
+                    dedup,
+                )
+                .await;
             } else {
                 let tool_use_id = req
                     .and_then(|r| r.get("tool_use_id"))
@@ -221,6 +262,7 @@ async fn handle_stream_line(
                     perms,
                     tg,
                     auth,
+                    dedup,
                     pid,
                     alias,
                     request_id,
@@ -407,19 +449,7 @@ pub async fn handle_submit(q: &Questions, pid: u32) -> Result<Vec<(i64, i64)>, S
         };
         answers_map.insert(qtext, val);
     }
-    let response = serde_json::json!({
-        "type": "control_response",
-        "response": {
-            "subtype": "success",
-            "request_id": p.request_id,
-            "response": {
-                "behavior": "allow",
-                "updatedInput": { "questions": p.questions.clone(), "answers": answers_map },
-                "updatedPermissions": [],
-                "toolUseID": p.tool_use_id,
-            }
-        }
-    });
+    let response = build_answer_response(&p.request_id, &p.tool_use_id, &p.questions, answers_map);
     let cards = p.cards.clone();
     let corr = p.tool_use_id.clone();
     let latency_ms = p.started.elapsed().as_millis() as u64;
@@ -436,4 +466,394 @@ pub async fn handle_submit(q: &Questions, pid: u32) -> Result<Vec<(i64, i64)>, S
     );
     map.remove(&pid);
     Ok(cards)
+}
+
+fn build_answer_response(
+    request_id: &str,
+    tool_use_id: &str,
+    questions: &Value,
+    answers_map: serde_json::Map<String, Value>,
+) -> Value {
+    serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": {
+                "behavior": "allow",
+                "updatedInput": { "questions": questions.clone(), "answers": answers_map },
+                "updatedPermissions": [],
+                "toolUseID": tool_use_id,
+            }
+        }
+    })
+}
+
+struct AutoAnswer {
+    answer: String,
+    confidence: f64,
+    reason: String,
+    backend: String,
+}
+
+fn pick_answer(
+    option_index: Option<usize>,
+    message: Option<&str>,
+    confidence: f64,
+    min_confidence: f64,
+    options: &[(String, String)],
+) -> Option<String> {
+    if confidence < min_confidence {
+        return None;
+    }
+    if let Some(index) = option_index {
+        return options.get(index).map(|(label, _)| label.clone());
+    }
+    let text = message.unwrap_or("").trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+fn answer_prompt(header: &str, qtext: &str, options: &[(String, String)], context: &str) -> String {
+    let mut out = String::new();
+    if !context.trim().is_empty() {
+        out.push_str("Recent session context (oldest first):\n");
+        out.push_str(context.trim());
+        out.push_str("\n\n");
+    }
+    out.push_str("The coding agent asked its user this single-select question:\n");
+    if !header.is_empty() {
+        out.push_str(&format!("Topic: {header}\n"));
+    }
+    out.push_str(&format!("Question: {qtext}\nOptions:\n"));
+    for (i, (label, desc)) in options.iter().enumerate() {
+        if desc.trim().is_empty() {
+            out.push_str(&format!("  {i}: {label}\n"));
+        } else {
+            out.push_str(&format!("  {i}: {label} - {desc}\n"));
+        }
+    }
+    out.push_str(
+        "\nChoose on the user's behalf. Set option_index to the best option's 0-based index, \
+         or put a short free-text answer in message if no option fits. Set confidence (0-1) and reason.",
+    );
+    out
+}
+
+const ANSWER_SYSTEM: &str =
+    "You answer a multiple-choice question that a coding agent asked its user, deciding on the \
+     user's behalf from the session context. Reply ONLY with the decision JSON. Set action to \
+     \"feedback\". To pick an option set option_index to its 0-based index; if no option fits and a \
+     short free-text reply is better, set message and omit option_index. Always set confidence \
+     (0-1) reflecting certainty and a brief reason.";
+
+async fn resolve_auto_answer(
+    session_id: &str,
+    header: &str,
+    qtext: &str,
+    options: &[(String, String)],
+    min_confidence: f64,
+    providers: &crate::automation::Providers,
+) -> Option<AutoAnswer> {
+    let mut context = String::new();
+    if let Some(jsonl) = crate::compass::find_claude_jsonl(session_id) {
+        for (role, text) in relay_adapters::claude::tail_messages(&jsonl, 8) {
+            let who = if role == 'A' || role == 'T' {
+                "agent"
+            } else {
+                "user"
+            };
+            let line = relay_core::state::truncate(text.trim(), 400);
+            context.push_str(&format!("{who}: {line}\n"));
+        }
+    }
+    let user = answer_prompt(header, qtext, options, &context);
+    let discovered = discover::discover_all().await;
+    let now = crate::automation::now_secs();
+    let (backend, decision) = pool::Pool::new()
+        .ask(
+            session_id,
+            providers,
+            &discovered,
+            ANSWER_SYSTEM,
+            &user,
+            now,
+        )
+        .await
+        .ok()?;
+    let confidence = decision.confidence.unwrap_or(0.0);
+    let answer = pick_answer(
+        decision.option_index,
+        decision.message.as_deref(),
+        confidence,
+        min_confidence,
+        options,
+    )?;
+    Some(AutoAnswer {
+        answer,
+        confidence,
+        reason: decision.reason,
+        backend: backend.id().to_string(),
+    })
+}
+
+fn auto_answer_eligible(
+    cfg: &crate::automation::AutomationConfig,
+    session_id: Option<&str>,
+    alias: &str,
+    questions: &Value,
+) -> bool {
+    if !cfg.auto.auto_answer_questions {
+        return false;
+    }
+    let Some(sid) = session_id else {
+        return false;
+    };
+    if cfg.resolve(Some(sid), alias, crate::automation::now_secs()) != crate::automation::Mode::Auto
+    {
+        return false;
+    }
+    let empty = vec![];
+    let qs = questions.as_array().unwrap_or(&empty);
+    if qs.len() != 1 {
+        return false;
+    }
+    let q0 = &qs[0];
+    if is_multi(q0) {
+        return false;
+    }
+    q0.get("options")
+        .and_then(|o| o.as_array())
+        .map(|opts| !opts.is_empty())
+        .unwrap_or(false)
+}
+
+const AUTO_ANSWER_BUDGET: Duration = Duration::from_secs(30);
+
+#[allow(clippy::too_many_arguments)]
+async fn commit_auto_answer(
+    pid: u32,
+    alias: &str,
+    session_id: &str,
+    request_id: &str,
+    tool_use_id: &str,
+    questions: &Value,
+    min_confidence: f64,
+    providers: &crate::automation::Providers,
+    tg: &Arc<Telegram>,
+    auth: &Arc<Auth>,
+) -> bool {
+    let empty = vec![];
+    let qs = questions.as_array().unwrap_or(&empty);
+    let Some(q0) = qs.first() else {
+        crate::decision_log::record(
+            "out",
+            "auto_answer_declined",
+            serde_json::json!({"alias": alias, "pid": pid, "kind": "question",
+                               "reason": "no question in the payload"}),
+        );
+        return false;
+    };
+    let options: Vec<(String, String)> = match q0.get("options").and_then(|o| o.as_array()) {
+        Some(opts) if !opts.is_empty() => opts
+            .iter()
+            .map(|ov| {
+                (
+                    ov.get("label")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    ov.get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                )
+            })
+            .collect(),
+        _ => {
+            crate::decision_log::record(
+                "out",
+                "auto_answer_declined",
+                serde_json::json!({"alias": alias, "pid": pid, "kind": "question",
+                               "reason": "question carried no options to choose from"}),
+            );
+            return false;
+        }
+    };
+    let qtext = q0.get("question").and_then(Value::as_str).unwrap_or("");
+    let header = q0.get("header").and_then(Value::as_str).unwrap_or("");
+    let resolved = match tokio::time::timeout(
+        AUTO_ANSWER_BUDGET,
+        resolve_auto_answer(
+            session_id,
+            header,
+            qtext,
+            &options,
+            min_confidence,
+            providers,
+        ),
+    )
+    .await
+    {
+        Ok(Some(resolved)) => resolved,
+        other => {
+            crate::decision_log::record(
+                "out",
+                "auto_answer_declined",
+                serde_json::json!({"alias": alias, "pid": pid, "kind": "question",
+                "min_confidence": min_confidence,
+                "reason": if other.is_err() {
+                    "provider budget expired"
+                } else {
+                    "no provider answer above the confidence floor"
+                }}),
+            );
+            return false;
+        }
+    };
+    let owner = Some(session_id.to_string());
+    if !inject::session_stable(pid, &owner) {
+        crate::decision_log::record(
+            "out",
+            "auto_answer_declined",
+            serde_json::json!({"alias": alias, "pid": pid, "kind": "question",
+                               "reason": "session not stable at delivery time"}),
+        );
+        return false;
+    }
+    let mut answers_map = serde_json::Map::new();
+    answers_map.insert(qtext.to_string(), Value::String(resolved.answer.clone()));
+    let response = build_answer_response(request_id, tool_use_id, questions, answers_map);
+    let injected = tokio::task::spawn_blocking(move || inject::send_raw(pid, &response)).await;
+    if !matches!(injected, Ok(Ok(()))) {
+        crate::decision_log::record(
+            "out",
+            "auto_answer_declined",
+            serde_json::json!({"alias": alias, "pid": pid, "kind": "question",
+                               "reason": "answer could not be injected into the session"}),
+        );
+        return false;
+    }
+    info!(
+        target: "relay::trace",
+        pipeline = "out", stage = "auto_answered", kind = "question", direction = "to_vscode",
+        corr = %tool_use_id, pid, alias = %alias,
+        backend = %resolved.backend, confidence = resolved.confidence,
+        "question auto-answered by provider"
+    );
+    crate::decision_log::record(
+        "out",
+        "auto_answered",
+        serde_json::json!({"alias": alias, "pid": pid, "kind": "question", "mode": "auto",
+                           "backend": resolved.backend, "confidence": resolved.confidence,
+                           "reason": resolved.reason}),
+    );
+    let note = format!(
+        "🤖 <b>Auto-answered</b> · <b>{}</b>\n{}\n➡️ <b>{}</b>\n<i>{} · {} · conf {:.2}</i>",
+        esc_html(alias),
+        esc_html(qtext),
+        esc_html(&resolved.answer),
+        esc_html(&resolved.backend),
+        esc_html(&resolved.reason),
+        resolved.confidence
+    );
+    for chat in auth.recipients().await {
+        let _ = tg.send(chat, &note, None).await;
+    }
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_question_card(
+    pid: u32,
+    alias: String,
+    session_id: Option<String>,
+    request_id: String,
+    tool_use_id: String,
+    questions: Value,
+    q: &Questions,
+    tg: &Arc<Telegram>,
+    auth: &Arc<Auth>,
+    dedup: &PromptDedup,
+) {
+    dedup.mark_live_card(&alias).await;
+    let mut pending = Pending {
+        request_id,
+        tool_use_id,
+        questions,
+        answers: HashMap::new(),
+        cards: Vec::new(),
+        alias,
+        session_id,
+        started: Instant::now(),
+    };
+    let (text, kb) = render(pid, &pending);
+    for chat in auth.recipients().await {
+        if let Ok(mid) = tg.send(chat, &text, Some(kb.clone())).await {
+            pending.cards.push((chat, mid));
+        }
+    }
+    info!(
+        target: "relay::trace",
+        pipeline = "out", stage = "sent", kind = "question",
+        corr = %pending.tool_use_id, pid, alias = %pending.alias,
+        chats = pending.cards.len(),
+        "question card sent"
+    );
+    q.lock().await.insert(pid, pending);
+}
+
+#[cfg(test)]
+mod auto_answer_tests {
+    use super::*;
+
+    fn opts() -> Vec<(String, String)> {
+        vec![
+            ("Keep".to_string(), "leave as is".to_string()),
+            ("Rewrite".to_string(), "start over".to_string()),
+        ]
+    }
+
+    #[test]
+    fn option_index_maps_to_label() {
+        let o = opts();
+        assert_eq!(
+            pick_answer(Some(1), None, 0.9, 0.7, &o).as_deref(),
+            Some("Rewrite")
+        );
+    }
+
+    #[test]
+    fn out_of_range_option_index_is_rejected() {
+        let o = opts();
+        assert_eq!(pick_answer(Some(9), None, 0.9, 0.7, &o), None);
+    }
+
+    #[test]
+    fn free_text_used_when_no_option_index() {
+        let o = opts();
+        assert_eq!(
+            pick_answer(None, Some("  do X instead  "), 0.9, 0.7, &o).as_deref(),
+            Some("do X instead")
+        );
+    }
+
+    #[test]
+    fn empty_free_text_is_rejected() {
+        let o = opts();
+        assert_eq!(pick_answer(None, Some("   "), 0.9, 0.7, &o), None);
+        assert_eq!(pick_answer(None, None, 0.9, 0.7, &o), None);
+    }
+
+    #[test]
+    fn low_confidence_falls_back_even_with_a_valid_option() {
+        let o = opts();
+        assert_eq!(pick_answer(Some(0), None, 0.5, 0.7, &o), None);
+    }
+
+    #[test]
+    fn auto_answer_is_off_by_default() {
+        let cfg = crate::automation::AutoRules::default();
+        assert!(!cfg.auto_answer_questions);
+        assert!((cfg.auto_answer_min_confidence - 0.7).abs() < f64::EPSILON);
+    }
 }

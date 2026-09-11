@@ -16,6 +16,13 @@ Codex support is experimental. The relay can observe Codex sessions and focus th
 right VS Code window, but it cannot answer Codex questions or control Codex in the
 background.
 
+## Can Another Model Check The Agent's Work?
+
+Yes. Cross review asks a model from a different family, for example Codex or Antigravity for a
+Claude Code chat, whether the chat still serves your last instruction, and can send a correction
+back into it. Run it by hand from the chat card or the app, or let it run on a schedule in Auto
+and Robot. See [Operating on macOS](operating.md).
+
 ## Does It Need Accessibility Permission?
 
 Only for window focus and GUI fallback actions. Reading session state does not require

@@ -1,6 +1,15 @@
 /target
 **/target
 
+# Research harnesses and measurement tooling: the methodology stays private.
+# We publish the finished tool and describe what material it was built on, not
+# the study apparatus itself.
+crates/*/examples/*_validate.rs
+crates/*/examples/*_replay.rs
+crates/*/examples/analyze.rs
+crates/*/examples/*_probe.rs
+crates/*/scripts/
+
 .env
 .env.local
 xx.txt
@@ -18,3 +27,8 @@ xx.txt
 
 /internal
 /dist
+
+HANDOFF.md
+HANDOFF.prev.md
+
+relay.env

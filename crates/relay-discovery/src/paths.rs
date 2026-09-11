@@ -75,6 +75,7 @@ const VSCODE_APP_DIRS: &[&str] = &[
     "Cursor",
     "Code - OSS",
     "Windsurf",
+    "Antigravity",
 ];
 
 pub fn encode_cwd(cwd: &std::path::Path) -> String {
@@ -119,6 +120,22 @@ fn lowercase_drive(s: &str) -> String {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn every_supported_editor_contributes_a_storage_dir() {
+        let paths = Paths {
+            home: PathBuf::from("/home/u"),
+        };
+        let dirs = paths.vscode_user_dirs();
+        assert_eq!(dirs.len(), VSCODE_APP_DIRS.len());
+        for app in VSCODE_APP_DIRS {
+            assert!(
+                dirs.iter().any(|d| d.ends_with(format!("{app}/User"))),
+                "no storage dir for {app}"
+            );
+        }
+        assert!(VSCODE_APP_DIRS.contains(&"Antigravity"));
+    }
 
     #[test]
     fn encodes_cwd_like_claude() {

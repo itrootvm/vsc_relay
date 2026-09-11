@@ -15,16 +15,21 @@ struct DiskEntry {
     at: Instant,
 }
 
+const LIVE_CARD_WINDOW: Duration = Duration::from_secs(90);
+
 #[derive(Default)]
 struct Inner {
     received: HashMap<String, Instant>,
     disk: HashMap<String, DiskEntry>,
+    live_by_alias: HashMap<String, Instant>,
 }
 
 impl Inner {
     fn prune(&mut self, now: Instant) {
         self.received.retain(|_, t| now.duration_since(*t) < TTL);
         self.disk.retain(|_, e| now.duration_since(e.at) < TTL);
+        self.live_by_alias
+            .retain(|_, t| now.duration_since(*t) < LIVE_CARD_WINDOW);
     }
 }
 
@@ -77,6 +82,26 @@ impl PromptDedup {
         g.disk
             .insert(tool_use_id.to_string(), DiskEntry { cards, at: now });
         None
+    }
+
+    pub async fn mark_live_card(&self, alias: &str) {
+        if alias.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let mut g = self.inner.lock().await;
+        g.prune(now);
+        g.live_by_alias.insert(alias.to_string(), now);
+    }
+
+    pub async fn has_live_card(&self, alias: &str) -> bool {
+        if alias.is_empty() {
+            return false;
+        }
+        let now = Instant::now();
+        let mut g = self.inner.lock().await;
+        g.prune(now);
+        g.live_by_alias.contains_key(alias)
     }
 
     pub async fn forget(&self, tool_use_id: &str) -> Vec<CardRef> {
@@ -168,5 +193,25 @@ mod tests {
     fn refs_matches_id_array() {
         let v = json!({"tool_use_ids":["a","tu_z"]});
         assert!(refs_tool_use_id(&v, "tu_z"));
+    }
+
+    #[tokio::test]
+    async fn a_notification_is_only_suppressed_while_an_interactive_card_is_live() {
+        let d = PromptDedup::new();
+        assert!(!d.has_live_card("demo_app").await);
+        assert!(!d.has_live_card("").await);
+
+        d.mark_live_card("demo_app").await;
+        assert!(d.has_live_card("demo_app").await);
+        assert!(
+            !d.has_live_card("other_app").await,
+            "other workspaces stay untouched"
+        );
+
+        d.mark_live_card("").await;
+        assert!(
+            !d.has_live_card("").await,
+            "an empty alias never owns anything"
+        );
     }
 }

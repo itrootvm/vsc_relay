@@ -4,9 +4,48 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 static COUNTER: AtomicU64 = AtomicU64::new(1);
+static HELD_TOOL_USES: OnceLock<Mutex<std::collections::HashMap<String, i64>>> = OnceLock::new();
+
+fn epoch_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+pub fn mark_gate_hold(payload: &Value) {
+    let Some(tool_use_id) = payload
+        .get("tool_use_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let mut held = HELD_TOOL_USES
+        .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let now = epoch_secs();
+    held.retain(|_, at| now - *at <= 130);
+    held.insert(tool_use_id.to_string(), now);
+}
+
+pub fn gate_holds_tool_use(tool_use_id: &str) -> bool {
+    if tool_use_id.is_empty() {
+        return false;
+    }
+    let mut held = HELD_TOOL_USES
+        .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let now = epoch_secs();
+    held.retain(|_, at| now - *at <= 130);
+    held.contains_key(tool_use_id)
+}
 
 pub fn is_hook_command(arg: &str) -> bool {
     arg == "hook"
@@ -19,6 +58,14 @@ pub fn run_hook(args: &[String]) -> Result<()> {
     let payload: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
     let request = json!({ "event": event, "payload": payload });
 
+    if event == "session-start" {
+        if let Some(output) =
+            session_protocol_output(&crate::automation::AutomationConfig::load(), &payload)
+        {
+            println!("{output}");
+        }
+    }
+
     let mut conn = match relay_ipc::connect_blocking(&Endpoint::Hook) {
         Ok(c) => c,
         Err(_) => return Ok(()),
@@ -30,12 +77,35 @@ pub fn run_hook(args: &[String]) -> Result<()> {
         if let Some(resp) = read_decision_line(conn, Duration::from_secs(125)) {
             if !resp.trim().is_empty() {
                 if let Ok(dec) = serde_json::from_str::<Value>(&resp) {
-                    emit_decision(&dec);
+                    emit_decision(&dec, &payload);
                 }
             }
         }
     }
     Ok(())
+}
+
+fn context_was_rebuilt(payload: &Value) -> bool {
+    match payload.get("source").and_then(Value::as_str) {
+        Some(source) => !source.eq_ignore_ascii_case("resume"),
+        None => true,
+    }
+}
+
+fn session_protocol_output(
+    config: &crate::automation::AutomationConfig,
+    payload: &Value,
+) -> Option<Value> {
+    (config.smart.enabled && config.smart.feedback_protocol && context_was_rebuilt(payload)).then(
+        || {
+            json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": relay_compass::session_health_protocol_context(),
+                }
+            })
+        },
+    )
 }
 
 fn read_decision_line(conn: BlockingConn, timeout: Duration) -> Option<String> {
@@ -48,30 +118,101 @@ fn read_decision_line(conn: BlockingConn, timeout: Duration) -> Option<String> {
     rx.recv_timeout(timeout).ok()
 }
 
-fn emit_decision(dec: &Value) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HookDialect {
+    Claude,
+    Codex,
+}
+
+fn hook_dialect(payload: &Value) -> HookDialect {
+    if payload.get("turn_id").is_some()
+        || payload
+            .get("transcript_path")
+            .and_then(Value::as_str)
+            .is_some_and(|path| path.contains("/.codex/"))
+    {
+        HookDialect::Codex
+    } else {
+        HookDialect::Claude
+    }
+}
+
+fn decision_output(dec: &Value, payload: &Value) -> Option<Value> {
     let decision = dec
         .get("decision")
         .and_then(|d| d.as_str())
         .unwrap_or("ask");
     let reason = dec.get("reason").and_then(|r| r.as_str()).unwrap_or("");
-    match decision {
-        "allow" | "deny" => {
-            let out = json!({
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": decision,
-                    "permissionDecisionReason": reason,
-                }
-            });
-            println!("{out}");
+    match (hook_dialect(payload), decision) {
+        (HookDialect::Codex, "deny" | "block") => Some(json!({
+            "decision": "block",
+            "reason": reason,
+        })),
+        (HookDialect::Codex, "allow") => Some(json!({
+            "decision": "allow",
+            "reason": reason,
+        })),
+        (HookDialect::Codex, "ask_user") => {
+            let honest = if reason.is_empty() {
+                "session-health gate blocked this change: read-only proof was not obtained and this agent cannot prompt the operator".to_string()
+            } else {
+                format!(
+                    "{reason}; blocked automatically because this agent cannot prompt the operator"
+                )
+            };
+            Some(json!({
+                "decision": "block",
+                "reason": honest,
+            }))
         }
-        _ => {}
+        (HookDialect::Claude, "allow" | "deny") => Some(json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": decision,
+                "permissionDecisionReason": reason,
+            }
+        })),
+        (HookDialect::Claude, "ask_user") => Some(json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "ask",
+                "permissionDecisionReason": reason,
+            }
+        })),
+        _ => None,
+    }
+}
+
+fn emit_decision(dec: &Value, payload: &Value) {
+    if let Some(out) = decision_output(dec, payload) {
+        println!("{out}");
     }
 }
 
 pub fn next_request_id() -> String {
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("r{n}")
+}
+
+pub fn native_identity_digest(payload: &Value) -> String {
+    let session = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let turn = payload.get("turn_id").and_then(Value::as_str).unwrap_or("");
+    let tool_use = payload
+        .get("tool_use_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let fallback = if tool_use.is_empty() {
+        serde_json::to_string(payload.get("tool_input").unwrap_or(&Value::Null)).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    blake3::hash(format!("{session}\0{turn}\0{tool_use}\0{fallback}").as_bytes())
+        .to_hex()
+        .as_str()[..32]
+        .to_string()
 }
 
 pub struct HookRequest {
@@ -130,6 +271,8 @@ pub fn tool_summary(payload: &Value) -> (String, Option<String>, String) {
         i.get("command")
             .and_then(|x| x.as_str())
             .or_else(|| i.get("file_path").and_then(|x| x.as_str()))
+            .or_else(|| i.get("path").and_then(|x| x.as_str()))
+            .or_else(|| i.get("target").and_then(|x| x.as_str()))
             .map(|s| s.to_string())
     });
     let cwd = payload
@@ -156,7 +299,6 @@ const DEFAULT_DANGER: &[&str] = &[
     "mkfs",
     "dd if=",
     " > /dev/sd",
-    "format ",
     "del /f",
     "del /q",
     "rd /s",
@@ -189,14 +331,65 @@ pub fn danger_patterns() -> Vec<String> {
 }
 
 pub fn is_destructive(target: &Option<String>) -> bool {
-    let Some(t) = target else { return false };
+    matched_danger(target).is_some()
+}
+
+pub fn matched_danger(target: &Option<String>) -> Option<String> {
+    let t = target.as_ref()?;
     let lower = t.to_lowercase();
-    danger_patterns().iter().any(|d| lower.contains(d.as_str()))
+    danger_patterns()
+        .into_iter()
+        .find(|pattern| lower.contains(pattern.as_str()))
+}
+
+#[cfg(test)]
+mod danger_tests {
+    use super::{is_destructive, matched_danger};
+
+    fn verdict(command: &str) -> Option<String> {
+        matched_danger(&Some(command.to_string()))
+    }
+
+    #[test]
+    fn a_psql_display_setting_is_not_a_disk_format() {
+        for harmless in [
+            "psql -c '\\pset format unaligned' -f query.sql",
+            "printf '\\pset format unaligned\\n' | psql -d db",
+            "git log --format '%h %s' | head",
+            "kubectl get pods -o custom-columns=NAME:.metadata.name --format wide",
+        ] {
+            assert_eq!(
+                verdict(harmless),
+                None,
+                "held for approval with nothing destructive in it: {harmless}"
+            );
+        }
+    }
+
+    #[test]
+    fn genuine_destruction_is_still_caught() {
+        for destructive in [
+            "rm -rf /tmp/build",
+            "psql -c 'DROP DATABASE reports_db'",
+            "kubectl delete pod postgres-0",
+            "diskpart",
+            "format c:",
+        ] {
+            assert!(
+                is_destructive(&Some(destructive.to_string())),
+                "must stay dangerous: {destructive}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
 mod redact_tests {
-    use super::redact_raw;
+    use super::{
+        decision_output, gate_holds_tool_use, mark_gate_hold, native_identity_digest, redact_raw,
+        session_protocol_output,
+    };
+    use crate::automation::AutomationConfig;
 
     #[test]
     fn command_with_embedded_url_does_not_leak() {
@@ -229,5 +422,105 @@ mod redact_tests {
     #[test]
     fn none_target_is_tool_only() {
         assert_eq!(redact_raw("Workflow", None), "Workflow");
+    }
+
+    #[test]
+    fn session_protocol_is_inert_until_smart_is_enabled() {
+        let config = AutomationConfig::default();
+        assert!(session_protocol_output(&config, &serde_json::json!({})).is_none());
+
+        let mut disabled = config.clone();
+        disabled.smart.enabled = true;
+        disabled.smart.feedback_protocol = false;
+        assert!(session_protocol_output(&disabled, &serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn session_protocol_is_sent_once_per_rebuilt_context_and_not_on_resume() {
+        let mut config = AutomationConfig::default();
+        config.smart.enabled = true;
+        let resumed = serde_json::json!({ "source": "resume" });
+        assert!(session_protocol_output(&config, &resumed).is_none());
+        for source in ["startup", "clear", "compact"] {
+            let payload = serde_json::json!({ "source": source });
+            assert!(
+                session_protocol_output(&config, &payload).is_some(),
+                "expected the protocol on {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_protocol_uses_cross_agent_additional_context_shape() {
+        let mut config = AutomationConfig::default();
+        config.smart.enabled = true;
+        let output = session_protocol_output(&config, &serde_json::json!({})).unwrap();
+        assert_eq!(
+            output["hookSpecificOutput"]["hookEventName"],
+            "SessionStart"
+        );
+        let context = output["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(context.contains("current-contract"));
+        assert!(!context.contains("session_id"));
+    }
+
+    #[test]
+    fn deny_uses_each_provider_native_shape() {
+        let decision = serde_json::json!({"decision":"deny", "reason":"gate"});
+        let claude = decision_output(&decision, &serde_json::json!({"session_id":"s"})).unwrap();
+        assert_eq!(claude["hookSpecificOutput"]["permissionDecision"], "deny");
+        let codex = decision_output(
+            &decision,
+            &serde_json::json!({"session_id":"s", "turn_id":"t", "tool_use_id":"u"}),
+        )
+        .unwrap();
+        assert_eq!(codex["decision"], "block");
+    }
+
+    #[test]
+    fn codex_ask_user_blocks_with_an_honest_reason() {
+        let decision =
+            serde_json::json!({"decision":"ask_user", "reason":"return this decision to the user"});
+        let codex = decision_output(
+            &decision,
+            &serde_json::json!({"session_id":"s", "turn_id":"t", "tool_use_id":"u"}),
+        )
+        .unwrap();
+        assert_eq!(codex["decision"], "block");
+        let reason = codex["reason"].as_str().unwrap();
+        assert!(reason.contains("cannot prompt the operator"));
+    }
+
+    #[test]
+    fn hook_identity_prefers_native_ids_and_payload_fallback() {
+        let first = serde_json::json!({
+            "session_id":"s", "turn_id":"t", "tool_use_id":"u",
+            "tool_name":"old", "tool_input":{"opaque":1}
+        });
+        let renamed = serde_json::json!({
+            "session_id":"s", "turn_id":"t", "tool_use_id":"u",
+            "tool_name":"renamed", "tool_input":{"opaque":2}
+        });
+        assert_eq!(
+            native_identity_digest(&first),
+            native_identity_digest(&renamed)
+        );
+
+        let fallback_a = serde_json::json!({"session_id":"s", "turn_id":"t", "tool_input":{"x":1}});
+        let fallback_b = serde_json::json!({"session_id":"s", "turn_id":"t", "tool_input":{"x":2}});
+        assert_ne!(
+            native_identity_digest(&fallback_a),
+            native_identity_digest(&fallback_b)
+        );
+    }
+
+    #[test]
+    fn gate_hold_deduplicates_the_native_permission_path() {
+        let id = format!("gate-dedup-{}", std::process::id());
+        assert!(!gate_holds_tool_use(&id));
+        mark_gate_hold(&serde_json::json!({"tool_use_id":id}));
+        assert!(gate_holds_tool_use(&id));
     }
 }

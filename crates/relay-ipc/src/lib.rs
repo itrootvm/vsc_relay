@@ -26,8 +26,64 @@ pub use windows::{
 pub use windows::{connect_async, AsyncConn, AsyncListener};
 
 #[cfg(unix)]
-pub fn acquire_single_instance(_name: &str) -> bool {
+static SINGLE_INSTANCE: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+
+#[cfg(unix)]
+pub fn single_instance_lock_path(name: &str) -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".vsc-relay")
+        .join(format!("{name}.lock"))
+}
+
+#[cfg(unix)]
+pub fn acquire_single_instance(name: &str) -> bool {
+    if SINGLE_INSTANCE.get().is_some() {
+        return true;
+    }
+    let path = single_instance_lock_path(name);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+    else {
+        return true;
+    };
+    match claim_lock_file(&mut file) {
+        true => {
+            let _ = SINGLE_INSTANCE.set(file);
+            true
+        }
+        false => false,
+    }
+}
+
+#[cfg(unix)]
+pub fn claim_lock_file(file: &mut std::fs::File) -> bool {
+    use std::io::Write;
+    use std::os::unix::io::AsRawFd;
+
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return false;
+    }
+    let _ = file.set_len(0);
+    let _ = write!(file, "{}", std::process::id());
+    let _ = file.flush();
     true
+}
+
+#[cfg(unix)]
+pub fn single_instance_holder(name: &str) -> Option<u32> {
+    std::fs::read_to_string(single_instance_lock_path(name))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 #[cfg(windows)]
@@ -78,5 +134,52 @@ pub fn process_alive(pid: u32) -> bool {
         let waited = WaitForSingleObject(handle, 0);
         CloseHandle(handle);
         waited != WAIT_OBJECT_0
+    }
+}
+
+#[cfg(all(test, unix))]
+mod single_instance_tests {
+    use super::*;
+
+    fn open(path: &std::path::Path) -> std::fs::File {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .expect("open lock file")
+    }
+
+    #[test]
+    fn a_second_relay_cannot_take_a_lock_the_first_one_holds() {
+        let path = std::env::temp_dir().join(format!("vsc-relay-lock-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let mut first = open(&path);
+        assert!(
+            claim_lock_file(&mut first),
+            "the first relay takes the lock"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap().trim(),
+            std::process::id().to_string(),
+            "the holder stamps its pid so the loser can name it"
+        );
+
+        let mut second = open(&path);
+        assert!(
+            !claim_lock_file(&mut second),
+            "two relays must never both hold it, that is how one bot gets polled twice"
+        );
+
+        drop(first);
+        let mut third = open(&path);
+        assert!(
+            claim_lock_file(&mut third),
+            "a released lock is free again, even if the holder was killed outright"
+        );
+        drop(third);
+        let _ = std::fs::remove_file(&path);
     }
 }

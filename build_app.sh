@@ -21,9 +21,11 @@ BUILDNO="$(date +%Y%m%d%H%M)"
 echo "     version $VERSION (build $BUILDNO)"
 
 for b in vsc-relay-agent vsc-claude-shim; do
-  cp "target/release/$b" "$CONTENTS/Resources/$b"
-  strip "$CONTENTS/Resources/$b" 2>/dev/null || true
-  chmod +x "$CONTENTS/Resources/$b"
+  staged="$CONTENTS/Resources/.$b.staged"
+  cp "target/release/$b" "$staged"
+  strip "$staged" 2>/dev/null || true
+  chmod +x "$staged"
+  mv -f "$staged" "$CONTENTS/Resources/$b"
 done
 
 echo "3/5 compiling swift ui..."
@@ -32,6 +34,13 @@ swiftc -O -parse-as-library \
   -o "$CONTENTS/MacOS/VSCRelay" \
   macapp/VSCRelay/main.swift \
   -framework SwiftUI -framework AppKit -framework Foundation
+
+for required in "$CONTENTS/MacOS/VSCRelay" "$CONTENTS/Resources/vsc-relay-agent" "$CONTENTS/Resources/vsc-claude-shim"; do
+  if [ ! -s "$required" ]; then
+    echo "build failed: $required is missing or empty" >&2
+    exit 1
+  fi
+done
 
 echo "4/5 signing (ad-hoc)..."
 codesign --force --deep --sign - "$BUILD/$APP" >/dev/null 2>&1 || echo "  (ad-hoc sign skipped)"
@@ -53,6 +62,22 @@ VS Code Agent Relay - install
 4. In Telegram, send /auth <your key> to your bot, then /menu.
 
 No Rust or extra tools are required to run this.
+
+To keep the relay running across reboots, install the launchd job from a
+clone of the repository:
+
+    ./launchd.sh install
+    ./launchd.sh status
+
+With that job installed the app stops starting a daemon of its own and
+attaches to the one launchd owns. Only one daemon may run per machine.
+
+To see what the relay decided and why:
+
+    /Applications/VSCRelay.app/Contents/Resources/vsc-relay-agent \
+        decisions --since 24h --by outcome
+
+Full day to day guide: docs/operating.md in the repository.
 TXT
 
 if command -v hdiutil >/dev/null 2>&1; then

@@ -1,7 +1,10 @@
+pub mod errors;
 pub mod event;
 pub mod ids;
 pub mod model;
 pub mod state;
+
+pub use errors::{classify_error, ErrorClass};
 
 pub use event::{fingerprint, EventKind, EventSource, RelayEvent};
 pub use ids::{AgentKind, MachineId, SessionId, WindowId};

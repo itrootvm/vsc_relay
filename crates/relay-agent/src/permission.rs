@@ -31,6 +31,7 @@ pub async fn on_request(
     perms: &Permissions,
     tg: &Arc<Telegram>,
     auth: &Arc<Auth>,
+    dedup: &crate::dedup::PromptDedup,
     pid: u32,
     alias: String,
     request_id: String,
@@ -42,7 +43,28 @@ pub async fn on_request(
         warn!(target: "relay::perm", pid, tool = %tool_name, "can_use_tool without request_id; cannot answer remotely");
         return;
     }
+    if crate::hooks::gate_holds_tool_use(&tool_use_id) {
+        info!(target: "relay::perm", pid, tool = %tool_name, tool_use_id = %tool_use_id,
+            "permission path suppressed because deterministic PreToolUse gate owns the native action");
+        return;
+    }
     if perms.lock().await.contains_key(&request_id) {
+        return;
+    }
+    let session_id = inject::session_id_of(pid);
+    if should_auto_approve(&alias, &session_id, &tool_name, &input)
+        && try_auto_approve(
+            tg,
+            auth,
+            pid,
+            &alias,
+            &session_id,
+            &request_id,
+            &tool_name,
+            &input,
+        )
+        .await
+    {
         return;
     }
     let mut p = PermPending {
@@ -53,9 +75,10 @@ pub async fn on_request(
         input,
         cards: Vec::new(),
         alias,
-        session_id: inject::session_id_of(pid),
+        session_id,
         started: Instant::now(),
     };
+    dedup.mark_live_card(&p.alias).await;
     let (text, kb) = render(&p);
     for chat in auth.recipients().await {
         if let Ok(mid) = tg.send(chat, &text, Some(kb.clone())).await {
@@ -77,6 +100,113 @@ pub async fn on_request(
         );
     }
     perms.lock().await.insert(request_id, p);
+}
+
+fn danger_target(input: &Value) -> Option<String> {
+    input
+        .get("command")
+        .and_then(|x| x.as_str())
+        .or_else(|| input.get("file_path").and_then(|x| x.as_str()))
+        .or_else(|| input.get("path").and_then(|x| x.as_str()))
+        .or_else(|| input.get("url").and_then(|x| x.as_str()))
+        .or_else(|| input.get("description").and_then(|x| x.as_str()))
+        .map(str::to_string)
+}
+
+fn auto_decision(
+    cfg: &crate::automation::AutomationConfig,
+    mode: crate::automation::Mode,
+    dangerous: bool,
+    tool_name: &str,
+) -> bool {
+    if mode != crate::automation::Mode::Auto {
+        return false;
+    }
+    if dangerous {
+        return false;
+    }
+    if tool_name == "ExitPlanMode" {
+        return cfg.auto.auto_accept_plan_exit;
+    }
+    cfg.auto.auto_approve
+}
+
+fn should_auto_approve(
+    alias: &str,
+    session_id: &Option<String>,
+    tool_name: &str,
+    input: &Value,
+) -> bool {
+    let cfg = crate::automation::AutomationConfig::load();
+    let mode = cfg.resolve(session_id.as_deref(), alias, crate::automation::now_secs());
+    let dangerous = crate::hooks::is_destructive(&danger_target(input));
+    auto_decision(&cfg, mode, dangerous, tool_name)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn try_auto_approve(
+    tg: &Arc<Telegram>,
+    auth: &Arc<Auth>,
+    pid: u32,
+    alias: &str,
+    session_id: &Option<String>,
+    request_id: &str,
+    tool_name: &str,
+    input: &Value,
+) -> bool {
+    if !inject::session_stable(pid, session_id) {
+        crate::decision_log::record(
+            "out",
+            "auto_approve_declined",
+            serde_json::json!({"tool": tool_name, "alias": alias, "pid": pid,
+                               "reason": "session not stable; fell back to a human card"}),
+        );
+        return false;
+    }
+    let response = serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": { "behavior": "allow", "updatedInput": input.clone() },
+        }
+    });
+    let sent = tokio::task::spawn_blocking(move || inject::send_raw(pid, &response)).await;
+    match sent {
+        Ok(Ok(())) => {}
+        _ => {
+            warn!(target: "relay::perm", pid, tool = %tool_name,
+                "auto-approve inject failed; falling back to human card");
+            crate::decision_log::record(
+                "out",
+                "auto_approve_declined",
+                serde_json::json!({"tool": tool_name, "alias": alias, "pid": pid,
+                                   "reason": "inject failed; fell back to a human card"}),
+            );
+            return false;
+        }
+    }
+    info!(
+        target: "relay::trace",
+        pipeline = "out", stage = "auto_approved", kind = "permission", direction = "to_vscode",
+        pid, alias = %alias, tool = %tool_name,
+        "permission auto-approved under Auto mode"
+    );
+    crate::decision_log::record(
+        "out",
+        "auto_approved",
+        serde_json::json!({"tool": tool_name, "alias": alias, "pid": pid, "mode": "auto",
+                           "reason": "Auto mode approved without asking"}),
+    );
+    let note = format!(
+        "🤖 <b>Auto-approved</b> - <b>{}</b>\n{}",
+        esc_html(alias),
+        esc_html(&summarize(tool_name, input))
+    );
+    for chat in auth.recipients().await {
+        let _ = tg.send(chat, &note, None).await;
+    }
+    true
 }
 
 fn summarize(tool: &str, input: &Value) -> String {
@@ -182,4 +312,61 @@ pub async fn void_referenced(perms: &Permissions, pid: u32, line: &Value) -> Vec
         .filter_map(|id| map.remove(&id))
         .map(|p| p.cards)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::automation::{AutomationConfig, Mode};
+
+    #[test]
+    fn manual_never_auto_approves() {
+        let cfg = AutomationConfig::default();
+        assert!(!auto_decision(&cfg, Mode::Manual, false, "Bash"));
+    }
+
+    #[test]
+    fn robot_defers_not_auto_approved() {
+        let cfg = AutomationConfig::default();
+        assert!(!auto_decision(&cfg, Mode::Robot, false, "Bash"));
+    }
+
+    #[test]
+    fn auto_approves_safe_tool() {
+        let cfg = AutomationConfig::default();
+        assert!(auto_decision(&cfg, Mode::Auto, false, "Bash"));
+    }
+
+    #[test]
+    fn auto_never_approves_danger() {
+        let cfg = AutomationConfig::default();
+        assert!(!auto_decision(&cfg, Mode::Auto, true, "Bash"));
+    }
+
+    #[test]
+    fn plan_exit_gated_by_its_own_rule() {
+        let mut cfg = AutomationConfig::default();
+        assert!(auto_decision(&cfg, Mode::Auto, false, "ExitPlanMode"));
+        cfg.auto.auto_accept_plan_exit = false;
+        assert!(!auto_decision(&cfg, Mode::Auto, false, "ExitPlanMode"));
+        assert!(auto_decision(&cfg, Mode::Auto, false, "Bash"));
+    }
+
+    #[test]
+    fn auto_approve_rule_off_blocks_generic_tools() {
+        let mut cfg = AutomationConfig::default();
+        cfg.auto.auto_approve = false;
+        assert!(!auto_decision(&cfg, Mode::Auto, false, "Bash"));
+        assert!(auto_decision(&cfg, Mode::Auto, false, "ExitPlanMode"));
+    }
+
+    #[test]
+    fn danger_target_prefers_command() {
+        let v = serde_json::json!({"command": "rm -rf /", "file_path": "/x"});
+        assert_eq!(danger_target(&v).as_deref(), Some("rm -rf /"));
+        let v2 = serde_json::json!({"file_path": "/x"});
+        assert_eq!(danger_target(&v2).as_deref(), Some("/x"));
+        let v3 = serde_json::json!({"plan": "do stuff"});
+        assert_eq!(danger_target(&v3), None);
+    }
 }

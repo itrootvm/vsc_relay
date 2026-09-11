@@ -9,6 +9,7 @@ local agent session state written by VS Code, Claude Code, and Codex.
 ## Start Here
 
 - [Installation](installation.md)
+- [Operating on macOS](operating.md)
 - [Architecture](architecture.md)
 - [Security](security.md)
 - [Threat model](threat-model.md)

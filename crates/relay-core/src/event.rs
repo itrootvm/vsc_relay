@@ -46,6 +46,10 @@ pub enum EventKind {
         to: String,
         alert: bool,
     },
+    AutoAction {
+        action: String,
+        detail: String,
+    },
     SessionEnded,
 }
 
@@ -60,6 +64,7 @@ impl EventKind {
             EventKind::Error { .. } => "error",
             EventKind::SubagentActivity { .. } => "subagent_activity",
             EventKind::ModeChanged { .. } => "mode_changed",
+            EventKind::AutoAction { .. } => "auto_action",
             EventKind::SessionEnded => "session_ended",
         }
     }
@@ -103,6 +108,7 @@ impl EventKind {
             } => last_message_excerpt.clone(),
             EventKind::StateChanged { from, to } => format!("{from}->{to}"),
             EventKind::ModeChanged { from, to, .. } => format!("{from}->{to}"),
+            EventKind::AutoAction { action, detail } => format!("{action}|{detail}"),
             EventKind::Error { message } => message.clone(),
             EventKind::SubagentActivity { count } => count.to_string(),
             EventKind::SessionStarted { entrypoint } => entrypoint.clone(),

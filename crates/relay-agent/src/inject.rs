@@ -138,7 +138,9 @@ fn gen_uuid() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::session_ok;
+    use super::{send_user_message, session_ok};
+    use relay_ipc::{BlockingListener, Endpoint};
+    use std::io::{BufRead, BufReader};
 
     #[test]
     fn session_ok_blocks_only_on_positive_mismatch() {
@@ -147,5 +149,30 @@ mod tests {
         assert!(session_ok(Some("s1"), None));
         assert!(session_ok(None, Some("s2")));
         assert!(session_ok(None, None));
+    }
+
+    #[test]
+    fn user_message_reaches_the_inject_socket_as_a_typed_user_frame() {
+        let endpoint = Endpoint::Inject(std::process::id());
+        let mut listener = BlockingListener::bind(&endpoint).unwrap();
+        let server = std::thread::spawn(move || {
+            let conn = listener.accept().unwrap();
+            let mut reader = BufReader::new(conn);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            line
+        });
+
+        send_user_message(std::process::id(), "bounded corrective directive").unwrap();
+        let line = server.join().unwrap();
+        relay_ipc::cleanup(&endpoint);
+
+        let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(frame["type"], "user");
+        assert_eq!(frame["message"]["role"], "user");
+        assert_eq!(
+            frame["message"]["content"][0]["text"],
+            "bounded corrective directive"
+        );
     }
 }

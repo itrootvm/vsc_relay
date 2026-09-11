@@ -74,7 +74,7 @@ impl ClaudeState {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClaudeReduction {
     pub state: ClaudeState,
     pub tip_uuid: Option<String>,
@@ -96,6 +96,7 @@ pub struct TokenUsage {
     pub output: u64,
     pub cache_read: u64,
     pub cache_creation: u64,
+    pub reasoning: u64,
 }
 
 const CLAUDE_SIDECARS: &[&str] = &[
@@ -107,69 +108,89 @@ const CLAUDE_SIDECARS: &[&str] = &[
     "system",
 ];
 
-pub fn reduce_claude(transcript: &str) -> ClaudeReduction {
-    use std::collections::BTreeMap;
+#[derive(Debug, Clone)]
+struct OpenTool {
+    name: String,
+    target: Option<String>,
+    questions: Option<Vec<Question>>,
+}
 
-    struct OpenTool {
-        name: String,
-        target: Option<String>,
-        questions: Option<Vec<Question>>,
-    }
+#[derive(Debug, Clone, Default)]
+pub struct ClaudeReducer {
+    open: std::collections::BTreeMap<String, OpenTool>,
+    reduction: ClaudeReduction,
+    last_kind: Option<&'static str>,
+    last_user_marker: Option<&'static str>,
+    api_error: Option<String>,
+    next_line_idx: usize,
+}
 
-    let mut open: BTreeMap<String, OpenTool> = BTreeMap::new();
-    let mut r = ClaudeReduction::default();
-    let mut last_kind: Option<&'static str> = None;
-    let mut last_user_marker: Option<&'static str> = None;
-
-    for (line_idx, line) in transcript.lines().enumerate() {
+impl ClaudeReducer {
+    pub fn push_line(&mut self, line: &str) {
+        let line_idx = self.next_line_idx;
+        self.next_line_idx = self.next_line_idx.saturating_add(1);
         let line = line.trim();
         if line.is_empty() {
-            continue;
+            return;
         }
         let v: serde_json::Value = match serde_json::from_str(line) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(_) => return,
         };
         let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
         if ty == "last-prompt" {
             if let Some(leaf) = v.get("leafUuid").and_then(|x| x.as_str()) {
-                r.tip_uuid = Some(leaf.to_string());
+                self.reduction.tip_uuid = Some(leaf.to_string());
             }
-            continue;
+            return;
         }
         if ty == "ai-title" {
             if let Some(t) = v.get("aiTitle").and_then(|x| x.as_str()) {
-                r.ai_title = Some(t.to_string());
+                self.reduction.ai_title = Some(t.to_string());
             }
-            continue;
+            return;
         }
         if ty == "mode" {
             if let Some(m) = v.get("mode").and_then(|x| x.as_str()) {
                 let norm = if m == "normal" { "default" } else { m };
-                r.mode = Some(norm.to_string());
+                self.reduction.mode = Some(norm.to_string());
             }
-            continue;
+            return;
         }
         if CLAUDE_SIDECARS.contains(&ty) || ty == "attachment" {
-            continue;
+            return;
         }
 
         if let Some(s) = v.get("sessionId").and_then(|x| x.as_str()) {
-            r.session_id = Some(s.to_string());
+            self.reduction.session_id = Some(s.to_string());
         }
         if let Some(s) = v.get("cwd").and_then(|x| x.as_str()) {
-            r.cwd = Some(s.to_string());
+            self.reduction.cwd = Some(s.to_string());
         }
         if let Some(s) = v.get("gitBranch").and_then(|x| x.as_str()) {
-            r.git_branch = Some(s.to_string());
+            self.reduction.git_branch = Some(s.to_string());
         }
 
         match ty {
             "assistant" => {
+                if v.get("isApiErrorMessage").and_then(|x| x.as_bool()) == Some(true) {
+                    let text = v
+                        .get("message")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_array())
+                        .and_then(|a| a.first())
+                        .and_then(|b| b.get("text"))
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("API error")
+                        .to_string();
+                    self.api_error = Some(text);
+                    self.last_kind = Some("api_error");
+                    return;
+                }
                 let msg = v.get("message");
                 if let Some(u) = msg.and_then(|m| m.get("usage")) {
-                    r.last_turn_tokens = Some(TokenUsage {
+                    self.reduction.last_turn_tokens = Some(TokenUsage {
                         input: u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
                         output: u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
                         cache_read: u
@@ -180,6 +201,7 @@ pub fn reduce_claude(transcript: &str) -> ClaudeReduction {
                             .get("cache_creation_input_tokens")
                             .and_then(|x| x.as_u64())
                             .unwrap_or(0),
+                        reasoning: 0,
                     });
                 }
                 let stop = msg
@@ -212,7 +234,7 @@ pub fn reduce_claude(transcript: &str) -> ClaudeReduction {
                                     None
                                 };
                                 let target = claude_tool_target(&name, input);
-                                open.insert(
+                                self.open.insert(
                                     id,
                                     OpenTool {
                                         name,
@@ -220,12 +242,12 @@ pub fn reduce_claude(transcript: &str) -> ClaudeReduction {
                                         questions,
                                     },
                                 );
-                                last_kind = Some("assistant_tool");
+                                self.last_kind = Some("assistant_tool");
                             }
                             Some("text") => {
                                 if let Some(t) = b.get("text").and_then(|x| x.as_str()) {
                                     if !t.trim().is_empty() {
-                                        r.last_assistant_text = Some(t.to_string());
+                                        self.reduction.last_assistant_text = Some(t.to_string());
                                     }
                                 }
                             }
@@ -234,11 +256,11 @@ pub fn reduce_claude(transcript: &str) -> ClaudeReduction {
                     }
                 }
                 if matches!(stop, Some("end_turn") | Some("stop_sequence")) {
-                    last_kind = Some("assistant_end");
+                    self.last_kind = Some("assistant_end");
                 }
             }
             "user" => {
-                last_user_marker = None;
+                self.last_user_marker = None;
                 let content = v.get("message").and_then(|m| m.get("content"));
                 match content {
                     Some(serde_json::Value::Array(blocks)) => {
@@ -247,20 +269,20 @@ pub fn reduce_claude(transcript: &str) -> ClaudeReduction {
                                 Some("tool_result") => {
                                     if let Some(id) = b.get("tool_use_id").and_then(|x| x.as_str())
                                     {
-                                        open.remove(id);
+                                        self.open.remove(id);
                                     }
                                     let txt = tool_result_text(b);
                                     if let Some(marker) = classify_marker(&txt) {
-                                        last_user_marker = Some(marker);
+                                        self.last_user_marker = Some(marker);
                                     }
-                                    last_kind = Some("user_result");
+                                    self.last_kind = Some("user_result");
                                 }
                                 Some("text") => {
                                     let t = b.get("text").and_then(|x| x.as_str()).unwrap_or("");
                                     if let Some(marker) = classify_marker(t) {
-                                        last_user_marker = Some(marker);
+                                        self.last_user_marker = Some(marker);
                                     }
-                                    last_kind = Some("user_text");
+                                    self.last_kind = Some("user_text");
                                 }
                                 _ => {}
                             }
@@ -268,9 +290,9 @@ pub fn reduce_claude(transcript: &str) -> ClaudeReduction {
                     }
                     Some(serde_json::Value::String(s)) => {
                         if let Some(marker) = classify_marker(s) {
-                            last_user_marker = Some(marker);
+                            self.last_user_marker = Some(marker);
                         }
-                        last_kind = Some("user_text");
+                        self.last_kind = Some("user_text");
                     }
                     _ => {}
                 }
@@ -279,42 +301,62 @@ pub fn reduce_claude(transcript: &str) -> ClaudeReduction {
         }
     }
 
-    r.open_tool_count = open.len();
+    pub fn reduction(&self) -> ClaudeReduction {
+        let mut r = self.reduction.clone();
+        r.open_tool_count = self.open.len();
+        r.pending_tool = None;
+        r.pending_target = None;
 
-    if let Some((_, t)) = open.iter().find(|(_, t)| t.name != "AskUserQuestion") {
-        r.pending_tool = Some(t.name.clone());
-        r.pending_target = t.target.clone();
+        if let Some((_, t)) = self.open.iter().find(|(_, t)| t.name != "AskUserQuestion") {
+            r.pending_tool = Some(t.name.clone());
+            r.pending_target = t.target.clone();
+        }
+
+        r.state = if let Some((id, q)) = self.open.iter().find(|(_, t)| t.name == "AskUserQuestion")
+        {
+            match &q.questions {
+                Some(qs) if !qs.is_empty() => ClaudeState::PendingQuestion(AskUserQuestion {
+                    questions: qs.clone(),
+                    tool_use_id: Some(id.clone()),
+                }),
+                _ => ClaudeState::Working {
+                    open_tools: open_tool_count(self.open.len()),
+                },
+            }
+        } else if self.last_kind == Some("api_error") {
+            ClaudeState::Error {
+                message: self
+                    .api_error
+                    .clone()
+                    .unwrap_or_else(|| "API error".to_string()),
+            }
+        } else if !self.open.is_empty() {
+            ClaudeState::Working {
+                open_tools: open_tool_count(self.open.len()),
+            }
+        } else {
+            match self.last_user_marker {
+                Some("interrupted") => ClaudeState::Interrupted,
+                Some("denied") => ClaudeState::Denied,
+                _ => match self.last_kind {
+                    Some("assistant_end") => ClaudeState::Idle,
+                    Some("user_result") | Some("user_text") | Some("assistant_tool") => {
+                        ClaudeState::Working { open_tools: 0 }
+                    }
+                    _ => ClaudeState::Idle,
+                },
+            }
+        };
+        r
     }
+}
 
-    r.state = if let Some((id, q)) = open.iter().find(|(_, t)| t.name == "AskUserQuestion") {
-        match &q.questions {
-            Some(qs) if !qs.is_empty() => ClaudeState::PendingQuestion(AskUserQuestion {
-                questions: qs.clone(),
-                tool_use_id: Some(id.clone()),
-            }),
-            _ => ClaudeState::Working {
-                open_tools: open_tool_count(open.len()),
-            },
-        }
-    } else if !open.is_empty() {
-        ClaudeState::Working {
-            open_tools: open_tool_count(open.len()),
-        }
-    } else {
-        match last_user_marker {
-            Some("interrupted") => ClaudeState::Interrupted,
-            Some("denied") => ClaudeState::Denied,
-            _ => match last_kind {
-                Some("assistant_end") => ClaudeState::Idle,
-                Some("user_result") | Some("user_text") | Some("assistant_tool") => {
-                    ClaudeState::Working { open_tools: 0 }
-                }
-                _ => ClaudeState::Idle,
-            },
-        }
-    };
-
-    r
+pub fn reduce_claude(transcript: &str) -> ClaudeReduction {
+    let mut reducer = ClaudeReducer::default();
+    for line in transcript.lines() {
+        reducer.push_line(line);
+    }
+    reducer.reduction()
 }
 
 fn open_tool_count(count: usize) -> u16 {
@@ -392,6 +434,8 @@ pub struct CodexReduction {
     pub last_agent_message: Option<String>,
     pub last_duration_ms: Option<u64>,
     pub last_turn_tokens: Option<TokenUsage>,
+    pub approval_policy: Option<String>,
+    pub sandbox: Option<String>,
 }
 
 pub fn reduce_codex(rollout: &str) -> CodexReduction {
@@ -407,7 +451,23 @@ pub fn reduce_codex(rollout: &str) -> CodexReduction {
             Ok(v) => v,
             Err(_) => continue,
         };
-        if v.get("type").and_then(|t| t.as_str()) != Some("event_msg") {
+        let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if ty == "turn_context" {
+            if let Some(p) = v.get("payload") {
+                if let Some(ap) = p.get("approval_policy").and_then(|x| x.as_str()) {
+                    r.approval_policy = Some(ap.to_string());
+                }
+                if let Some(sb) = p
+                    .get("sandbox_policy")
+                    .and_then(|s| s.get("type"))
+                    .and_then(|x| x.as_str())
+                {
+                    r.sandbox = Some(sb.to_string());
+                }
+            }
+            continue;
+        }
+        if ty != "event_msg" {
             continue;
         }
         let p = match v.get("payload") {
@@ -469,6 +529,10 @@ pub fn reduce_codex(rollout: &str) -> CodexReduction {
                             .and_then(value_u64)
                             .unwrap_or(0),
                         cache_creation: 0,
+                        reasoning: u
+                            .get("reasoning_output_tokens")
+                            .and_then(value_u64)
+                            .unwrap_or(0),
                     });
                 }
             }
@@ -562,6 +626,37 @@ mod tests {
     }
 
     #[test]
+    fn claude_api_error_becomes_error_state() {
+        let t = r#"{"type":"assistant","isApiErrorMessage":true,"message":{"role":"assistant","content":[{"type":"text","text":"API Error: Connection closed mid-response. The response above may be incomplete."}]}}"#;
+        match reduce_claude(t).state {
+            ClaudeState::Error { message } => {
+                assert!(message.contains("Connection closed mid-response"))
+            }
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn claude_api_error_superseded_by_user_reply() {
+        let t = concat!(
+            r#"{"type":"assistant","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"API Error: Server error mid-response."}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"type":"text","text":"continue"}]}}"#
+        );
+        assert!(!matches!(reduce_claude(t).state, ClaudeState::Error { .. }));
+    }
+
+    #[test]
+    fn claude_api_error_wins_over_orphaned_open_tool() {
+        let t = concat!(
+            r#"{"type":"assistant","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}"#,
+            "\n",
+            r#"{"type":"assistant","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"API Error: Connection closed mid-response. The response above may be incomplete."}]}}"#
+        );
+        assert!(matches!(reduce_claude(t).state, ClaudeState::Error { .. }));
+    }
+
+    #[test]
     fn claude_pending_multi_question() {
         let t = r#"{"type":"assistant","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"q1","name":"AskUserQuestion","input":{"questions":[{"header":"Topology","question":"How to lay it out?","multiSelect":false,"options":[{"label":"Monorepo","description":"a"},{"label":"Separate git repos","description":"b"}]},{"header":"Mobile","question":"Stack?","multiSelect":false,"options":[{"label":"Capacitor + Vue3","description":"a"},{"label":"Ionic Vue + Capacitor","description":"b"},{"label":"Flutter / native","description":"c"},{"label":"Defer for now","description":"d"}]},{"header":"Scope","question":"What now?","multiSelect":false,"options":[{"label":"Backend","description":"a"},{"label":"All six","description":"b"}]}]}}]}}"#;
         let r = reduce_claude(t);
@@ -607,13 +702,22 @@ mod tests {
 
     #[test]
     fn codex_parses_token_count() {
-        let t = r#"{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":181164,"cached_input_tokens":180096,"output_tokens":649,"total_tokens":181813}}}}"#;
+        let t = r#"{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":181164,"cached_input_tokens":180096,"output_tokens":649,"reasoning_output_tokens":325,"total_tokens":181813}}}}"#;
         let r = reduce_codex(t);
         let u = r.last_turn_tokens.expect("codex tokens parsed");
         assert_eq!(u.input, 181164);
         assert_eq!(u.output, 649);
         assert_eq!(u.cache_read, 180096);
         assert_eq!(u.cache_creation, 0);
+        assert_eq!(u.reasoning, 325);
+    }
+
+    #[test]
+    fn codex_parses_turn_context_danger() {
+        let t = r#"{"type":"turn_context","payload":{"turn_id":"x","approval_policy":"never","sandbox_policy":{"type":"danger-full-access"},"model":"gpt-5-codex"}}"#;
+        let r = reduce_codex(t);
+        assert_eq!(r.approval_policy.as_deref(), Some("never"));
+        assert_eq!(r.sandbox.as_deref(), Some("danger-full-access"));
     }
 
     #[test]

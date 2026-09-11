@@ -1,0 +1,36 @@
+{"premise":"The parser is complete.","hypothesis":"The work is complete.","label":"entailment","split":"train","group":"train-en-01"}
+{"premise":"The fix is finished and checked.","hypothesis":"The work is complete.","label":"entailment","split":"train","group":"train-en-02"}
+{"premise":"Парсер полностью исправлен.","hypothesis":"Работа завершена.","label":"entailment","split":"train","group":"train-ru-01"}
+{"premise":"Проверка успешно закончена.","hypothesis":"Работа завершена.","label":"entailment","split":"train","group":"train-ru-02"}
+{"premise":"Жұмыс аяқталды.","hypothesis":"Жұмыс орындалды.","label":"entailment","split":"train","group":"train-kk-01"}
+{"premise":"Барлық сынақ сәтті өтті.","hypothesis":"Тексеру сәтті аяқталды.","label":"entailment","split":"train","group":"train-kk-02"}
+{"premise":"The runtime test passed.","hypothesis":"The result was verified.","label":"entailment","split":"train","group":"train-en-03"}
+{"premise":"Реальный запрос прошёл.","hypothesis":"Результат проверен.","label":"entailment","split":"train","group":"train-ru-03"}
+{"premise":"I cannot continue without repository access.","hypothesis":"Work is blocked.","label":"entailment","split":"train","group":"train-en-04"}
+{"premise":"Без доступа продолжить невозможно.","hypothesis":"Работа заблокирована.","label":"entailment","split":"train","group":"train-ru-04"}
+{"premise":"The parser is not complete.","hypothesis":"The work is complete.","label":"contradiction","split":"train","group":"train-en-05"}
+{"premise":"The fix is still in progress.","hypothesis":"The work is complete.","label":"contradiction","split":"train","group":"train-en-06"}
+{"premise":"Парсер ещё не исправлен.","hypothesis":"Работа завершена.","label":"contradiction","split":"train","group":"train-ru-05"}
+{"premise":"Проверка пока не запускалась.","hypothesis":"Результат проверен.","label":"contradiction","split":"train","group":"train-ru-06"}
+{"premise":"Жұмыс әлі аяқталған жоқ.","hypothesis":"Жұмыс орындалды.","label":"contradiction","split":"train","group":"train-kk-03"}
+{"premise":"Сынақ әлі іске қосылған жоқ.","hypothesis":"Тексеру сәтті аяқталды.","label":"contradiction","split":"train","group":"train-kk-04"}
+{"premise":"Repository access is available.","hypothesis":"Work is blocked.","label":"contradiction","split":"train","group":"train-en-07"}
+{"premise":"Доступ к репозиторию есть.","hypothesis":"Работа заблокирована.","label":"contradiction","split":"train","group":"train-ru-07"}
+{"premise":"The integration query failed.","hypothesis":"The runtime test passed.","label":"contradiction","split":"train","group":"train-en-08"}
+{"premise":"Интеграционный запрос упал.","hypothesis":"Реальный запрос прошёл.","label":"contradiction","split":"train","group":"train-ru-08"}
+{"premise":"The assistant opened parser.rs.","hypothesis":"The work is complete.","label":"neutral","split":"train","group":"train-en-09"}
+{"premise":"The user asked about the GUI.","hypothesis":"The runtime test passed.","label":"neutral","split":"train","group":"train-en-10"}
+{"premise":"Ассистент читает конфигурацию.","hypothesis":"Работа завершена.","label":"neutral","split":"train","group":"train-ru-09"}
+{"premise":"Пользователь уточнил цель.","hypothesis":"Работа заблокирована.","label":"neutral","split":"train","group":"train-ru-10"}
+{"premise":"Агент файлды ашты.","hypothesis":"Жұмыс орындалды.","label":"neutral","split":"train","group":"train-kk-05"}
+{"premise":"Пайдаланушы сұрақ қойды.","hypothesis":"Тексеру сәтті аяқталды.","label":"neutral","split":"train","group":"train-kk-06"}
+{"premise":"The command prints a version.","hypothesis":"Work is blocked.","label":"neutral","split":"train","group":"train-en-11"}
+{"premise":"Команда печатает версию.","hypothesis":"Результат проверен.","label":"neutral","split":"train","group":"train-ru-11"}
+{"premise":"A document describes acceptance criteria.","hypothesis":"The parser is complete.","label":"neutral","split":"train","group":"train-en-12"}
+{"premise":"Документ описывает критерии.","hypothesis":"Парсер полностью исправлен.","label":"neutral","split":"train","group":"train-ru-12"}
+{"premise":"The requested change is finished.","hypothesis":"The work is complete.","label":"entailment","split":"validation","group":"validation-en"}
+{"premise":"Работа ещё не завершена.","hypothesis":"Работа завершена.","label":"contradiction","split":"validation","group":"validation-ru"}
+{"premise":"Пользователь открыл документ.","hypothesis":"Работа заблокирована.","label":"neutral","split":"validation","group":"validation-neutral"}
+{"premise":"Жұмыс толығымен аяқталды.","hypothesis":"Жұмыс орындалды.","label":"entailment","split":"held_out","group":"held-kk"}
+{"premise":"The production check did not run.","hypothesis":"The result was verified.","label":"contradiction","split":"held_out","group":"held-en"}
+{"premise":"Ассистент изучает журнал.","hypothesis":"Работа завершена.","label":"neutral","split":"held_out","group":"held-neutral"}

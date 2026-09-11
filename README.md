@@ -45,8 +45,16 @@ box, leave it running, and handle the next decision from your phone.
 - A Telegram menu showing open VS Code windows and active Claude Code or Codex chats.
 - Notifications when a session finishes, asks a question, errors, or needs attention.
 - Background replies into Claude Code chats when the shim is installed.
+- Media from Telegram: send or forward a photo, voice message, video, or document and the
+  relay stages it in a private local folder, then hands the file path to the session so the
+  agent can read it with its own tools. If a chat has no active session, a picker asks where
+  to route it. Attach local files to a composed prompt from the desktop app too.
 - Telegram buttons for Claude Code questions, including multi-question prompts.
 - Allow or Deny controls for permission requests surfaced through the relay.
+- Cross review: a model from another family, such as Codex or Antigravity, reads a chat and
+  says whether it still serves your last instruction, and can send a correction back into it.
+- A decision log of every approval, ask, gate verdict and Telegram delivery outcome, counted
+  with `vsc-relay-agent decisions`.
 - A blocked-command guard for dangerous shell commands such as `rm -rf`, `drop table`,
   `git push --force`, and patterns you add yourself.
 - Claude Code controls for model, reasoning effort, and permission mode.
@@ -131,7 +139,8 @@ The bot also exposes most actions as buttons. `/menu` is the recommended entry p
 
 The menu buttons add shortcuts for common workflows: choose a window, choose a chat, read
 recent messages, send a prompt, continue, stop, focus, change Claude model, change effort,
-change permission mode, answer a question, or approve and deny a permission request.
+change permission mode, answer a question, or approve and deny a permission request. Every
+chat card also has Cross review, which asks another model to check the chat.
 
 ## Install (macOS)
 
@@ -335,6 +344,7 @@ pairing key and review your blocked-command list.
 ## Documentation
 
 - [Installation](docs/installation.md)
+- [Operating on macOS](docs/operating.md)
 - [Architecture](docs/architecture.md)
 - [Security details](SECURITY.md)
 - [Threat model](docs/threat-model.md)

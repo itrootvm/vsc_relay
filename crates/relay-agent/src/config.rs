@@ -3,6 +3,9 @@ use std::path::PathBuf;
 
 const DEFAULT_INTERVAL_SECS: u64 = 2;
 const DEFAULT_CODEX_MAX_AGE_HOURS: u64 = 24;
+const DEFAULT_MEDIA_TTL_HOURS: u64 = 72;
+const DEFAULT_MEDIA_MAX_MB: u64 = 50;
+const DEFAULT_MEDIA_STORE_MB: u64 = 512;
 
 pub fn config_dir() -> Option<PathBuf> {
     #[cfg(windows)]
@@ -28,6 +31,9 @@ pub struct Config {
     pub pair_secret: Option<String>,
     pub interval: u64,
     pub codex_max_age_ms: i64,
+    pub media_ttl_ms: i64,
+    pub media_max_download_bytes: u64,
+    pub media_store_max_bytes: u64,
 }
 
 impl Config {
@@ -57,6 +63,14 @@ impl Config {
             .filter(|v| *v > 0)
             .and_then(hours_to_ms)
             .unwrap_or_else(|| hours_to_ms(DEFAULT_CODEX_MAX_AGE_HOURS).unwrap_or(i64::MAX));
+        let media_ttl_ms = std::env::var("RELAY_MEDIA_TTL_H")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .and_then(hours_to_ms)
+            .unwrap_or_else(|| hours_to_ms(DEFAULT_MEDIA_TTL_HOURS).unwrap_or(i64::MAX));
+        let media_max_download_bytes = mb_env("RELAY_MEDIA_MAX_MB", DEFAULT_MEDIA_MAX_MB);
+        let media_store_max_bytes = mb_env("RELAY_MEDIA_STORE_MB", DEFAULT_MEDIA_STORE_MB);
         Self {
             machine_name,
             telegram_token,
@@ -64,8 +78,20 @@ impl Config {
             pair_secret,
             interval,
             codex_max_age_ms,
+            media_ttl_ms,
+            media_max_download_bytes,
+            media_store_max_bytes,
         }
     }
+}
+
+fn mb_env(name: &str, default_mb: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(default_mb)
+        .saturating_mul(1024 * 1024)
 }
 
 fn env_nonempty(name: &str) -> Option<String> {

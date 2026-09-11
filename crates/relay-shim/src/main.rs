@@ -269,6 +269,22 @@ fn confine_child(child: &std::process::Child) {
 }
 
 const LOG_CAP_BYTES: u64 = 5 * 1024 * 1024;
+const LOG_GENERATIONS: usize = 3;
+
+fn rotate_capped(path: &Path) {
+    for generation in (1..=LOG_GENERATIONS).rev() {
+        let source = if generation == 1 {
+            path.to_path_buf()
+        } else {
+            PathBuf::from(format!("{}.{}", path.display(), generation - 1))
+        };
+        let target = PathBuf::from(format!("{}.{}", path.display(), generation));
+        if source.exists() {
+            let _ = std::fs::remove_file(&target);
+            let _ = std::fs::rename(&source, &target);
+        }
+    }
+}
 
 fn open_capped(path: &Path) -> Option<std::fs::File> {
     let oversized = std::fs::metadata(path)
@@ -278,10 +294,9 @@ fn open_capped(path: &Path) -> Option<std::fs::File> {
     opts.create(true);
     set_private_mode(&mut opts);
     if oversized {
-        opts.write(true).truncate(true);
-    } else {
-        opts.append(true);
+        rotate_capped(path);
     }
+    opts.append(true);
     opts.open(path).ok()
 }
 
