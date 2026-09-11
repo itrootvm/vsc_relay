@@ -179,7 +179,9 @@ impl LocalNli {
             );
         }
         Ok(logits
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|row| {
                 let temperature = self.manifest.temperature;
                 let max = row

@@ -378,10 +378,8 @@ fn obligation_vector_mask() -> Result<[u64; SIM_WORDS]> {
     hasher.update(b"vsc-relay-obligation-vector-mask-v1");
     hasher.finalize_xof().fill(&mut bytes);
     let mut words = [0u64; SIM_WORDS];
-    for (index, chunk) in bytes.chunks_exact(8).enumerate() {
-        let mut word = [0u8; 8];
-        word.copy_from_slice(chunk);
-        words[index] = u64::from_le_bytes(word);
+    for (index, chunk) in bytes.as_chunks::<8>().0.iter().enumerate() {
+        words[index] = u64::from_le_bytes(*chunk);
     }
     Ok(words)
 }
