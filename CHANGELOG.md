@@ -63,6 +63,10 @@
   way to inject browser arguments through the `BROWSER` variable on Unix. The macOS app never
   used that crate.
 - Test fixtures no longer carry real host names, user names, addresses or project names.
+- The static Linux build leaves out the local ONNX semantic model, because ONNX Runtime ships
+  no build for musl. The Ollama, OpenAI compatible and agent CLI backends work there, and
+  choosing the local model on Linux says so instead of failing obscurely. macOS and Windows keep
+  it.
 - Handoff now works in the reverse direction: a Cursor or an Antigravity session can be the
   source, not only Claude Code and Codex. Two adapters read those sessions where each family
   keeps them, a content-addressed blob store for Cursor and a step log for Antigravity, and

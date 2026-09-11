@@ -105,6 +105,11 @@ pub fn acquire_single_instance(name: &str) -> bool {
     }
 }
 
+#[cfg(windows)]
+pub fn single_instance_holder(_name: &str) -> Option<u32> {
+    None
+}
+
 #[cfg(unix)]
 pub fn process_alive(pid: u32) -> bool {
     if pid == 0 {

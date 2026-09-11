@@ -215,6 +215,7 @@ impl StoreLock {
         }
         #[cfg(windows)]
         {
+            let _ = path;
             Ok(Self {})
         }
     }

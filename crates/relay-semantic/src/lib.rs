@@ -2,6 +2,10 @@ pub mod annotation;
 mod cli;
 pub mod config;
 pub mod install;
+#[cfg(not(target_env = "musl"))]
+mod local;
+#[cfg(target_env = "musl")]
+#[path = "local_unavailable.rs"]
 mod local;
 mod remote;
 
