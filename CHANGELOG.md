@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.1 - 2026-09-12
 
 - Linux builds again. 0.5.0 added `relay-semantic`, which linked ONNX Runtime unconditionally,
   and the prebuilt runtime needs glibc 2.38 or newer and has no musl build at all. The daemon

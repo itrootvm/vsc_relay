@@ -2909,7 +2909,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "relay-adapters"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2924,7 +2924,7 @@ dependencies = [
 
 [[package]]
 name = "relay-agent"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2956,7 +2956,7 @@ dependencies = [
 
 [[package]]
 name = "relay-cognitive"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "blake3",
  "relay-compass",
@@ -2966,7 +2966,7 @@ dependencies = [
 
 [[package]]
 name = "relay-compass"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "blake3",
  "serde",
@@ -2977,7 +2977,7 @@ dependencies = [
 
 [[package]]
 name = "relay-control"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "relay-core",
@@ -2987,7 +2987,7 @@ dependencies = [
 
 [[package]]
 name = "relay-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "blake3",
  "chrono",
@@ -2998,7 +2998,7 @@ dependencies = [
 
 [[package]]
 name = "relay-discovery"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3014,7 +3014,7 @@ dependencies = [
 
 [[package]]
 name = "relay-gui"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "dirs",
  "eframe",
@@ -3025,7 +3025,7 @@ dependencies = [
 
 [[package]]
 name = "relay-ipc"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "dirs",
  "libc",
@@ -3035,7 +3035,7 @@ dependencies = [
 
 [[package]]
 name = "relay-semantic"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -3054,7 +3054,7 @@ dependencies = [
 
 [[package]]
 name = "relay-shim"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "dirs",
  "relay-ipc",
