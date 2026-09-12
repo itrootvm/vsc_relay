@@ -40,6 +40,17 @@
 - `./systemd.sh` supervises a dev clone the way `./launchd.sh` does on macOS, with `install`,
   `uninstall`, `status`, `start`, `stop`, `restart` and a `logs` that reads the file the daemon
   actually writes.
+- Windows no longer drops a message from a client that writes and exits. The blocking named-pipe
+  accept treated `ERROR_NO_DATA` as a failure, but that is what `ConnectNamedPipe` returns when
+  the client finished before the server got there, which is exactly how the relay sends a
+  directive. The buffered line is now read instead of thrown away with an error.
+- Windows keeps an atomic write atomic when someone is reading. Replacing a file whose reader
+  still holds it open fails on Windows, so a store update could return an access-denied error
+  and leave its temporary file behind; the publish step now retries briefly and cleans up if it
+  finally cannot.
+- The 0.5.0 test suite never ran on Windows, since the release gate only tested on Linux. It does
+  now: two of its tests assumed POSIX utilities, one assumed a scratch directory unique per
+  process, and clippy on Windows found two functions left dead by their `cfg(unix)` callers.
 
 ## 0.5.0 - 2026-09-11
 
