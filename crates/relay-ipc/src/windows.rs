@@ -31,6 +31,7 @@ const OPEN_EXISTING: u32 = 3;
 const SECURITY_SQOS_PRESENT: u32 = 0x0010_0000;
 const SECURITY_IDENTIFICATION: u32 = 0x0001_0000;
 const ERROR_PIPE_CONNECTED: u32 = 535;
+const ERROR_NO_DATA: u32 = 232;
 const ERROR_PIPE_BUSY: u32 = 231;
 const ERROR_BROKEN_PIPE: u32 = 109;
 const ERROR_PIPE_NOT_CONNECTED: u32 = 233;
@@ -218,7 +219,7 @@ impl BlockingListener {
         let ok = unsafe { ConnectNamedPipe(self.pending.0, null_mut()) };
         if ok == 0 {
             let e = unsafe { GetLastError() };
-            if e != ERROR_PIPE_CONNECTED {
+            if e != ERROR_PIPE_CONNECTED && e != ERROR_NO_DATA {
                 return Err(io::Error::from_raw_os_error(e as i32));
             }
         }
@@ -246,7 +247,7 @@ impl Read for BlockingConn {
         };
         if ok == 0 {
             let e = unsafe { GetLastError() };
-            if e == ERROR_BROKEN_PIPE || e == ERROR_PIPE_NOT_CONNECTED {
+            if e == ERROR_BROKEN_PIPE || e == ERROR_PIPE_NOT_CONNECTED || e == ERROR_NO_DATA {
                 return Ok(0);
             }
             return Err(io::Error::from_raw_os_error(e as i32));
