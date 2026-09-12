@@ -189,6 +189,7 @@ fn information_profile_path() -> PathBuf {
     root().join("information-profile-v2.bin")
 }
 
+#[cfg(unix)]
 fn information_profile_lock_path() -> PathBuf {
     root().join("information-profile-v2.lock")
 }

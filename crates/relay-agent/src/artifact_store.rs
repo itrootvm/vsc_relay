@@ -184,6 +184,7 @@ fn backup_path(path: &Path) -> PathBuf {
     path.with_extension("json.bak")
 }
 
+#[cfg(unix)]
 fn lock_path(path: &Path) -> PathBuf {
     path.with_extension("json.lock")
 }
