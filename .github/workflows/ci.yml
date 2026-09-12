@@ -3,9 +3,9 @@ name: ci
 on:
   push:
     branches:
-      - main
-      - master
+      - "**"
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -42,7 +42,26 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Test
-        run: cargo test --workspace --all-features
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --workspace --all-features 2>&1 | tee test-output.txt
+
+      - name: Report failing tests
+        if: failure()
+        shell: bash
+        run: |
+          if [ ! -f test-output.txt ]; then
+            echo "::error::no test output was captured"
+            exit 0
+          fi
+          grep -E '^test .* FAILED$' test-output.txt | while IFS= read -r line; do
+            echo "::error::$line"
+          done
+          grep -E 'panicked at|assertion .* failed|left:|right:|Caused by:|Os \{ code' test-output.txt \
+            | head -40 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
 
   audit:
     runs-on: ubuntu-latest
