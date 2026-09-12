@@ -25,8 +25,33 @@ pub fn secure_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let sequence = WRITE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = path.with_extension(format!("tmp.{}.{}", std::process::id(), sequence));
     write_private(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)?;
+    if let Err(error) = publish(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn publish(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    std::fs::rename(tmp, path)
+}
+
+#[cfg(windows)]
+fn publish(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    let mut attempt = 0;
+    loop {
+        match std::fs::rename(tmp, path) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                if attempt >= 60 {
+                    return Err(error);
+                }
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    }
 }
 
 pub fn secure_create_new(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
@@ -90,9 +115,20 @@ pub fn set_executable(_path: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    fn unique_stamp() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    }
+
     #[test]
     fn concurrent_writers_never_publish_a_half_written_file() {
-        let dir = std::env::temp_dir().join(format!("vsc-relay-fsutil-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "vsc-relay-fsutil-{}-{}",
+            std::process::id(),
+            unique_stamp()
+        ));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("payload.json");
         let short = vec![b'a'; 4 * 1024];
@@ -139,7 +175,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "vsc-relay-fsutil-claim-{}-{}",
             std::process::id(),
-            WRITE_SEQUENCE.load(std::sync::atomic::Ordering::Relaxed)
+            unique_stamp()
         ));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("secret.key");

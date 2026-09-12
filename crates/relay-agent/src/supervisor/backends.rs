@@ -546,6 +546,7 @@ mod tests {
         assert_eq!(or["model"], "a/b");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn cli_improve_returns_trimmed_stdout() {
         let out = cli_improve("gemini-cli", "echo", "", &[], "keep this", "")
@@ -555,6 +556,7 @@ mod tests {
         assert_eq!(out, out.trim());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn run_cli_captures_and_parses() {
         let out = run_cli(
@@ -570,6 +572,7 @@ mod tests {
         assert_eq!(d.reason, "done");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn run_cli_passes_env() {
         let out = run_cli(
